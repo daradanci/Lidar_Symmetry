@@ -502,71 +502,169 @@ class PCD_TREE(PCD):
         self.trunk_y = trunk_y  # Координата Y ствола
         self.symmetry_score = None  # Общий коэффициент симметрии дерева
         self.symmetry_scores_per_layer = []  # Массив коэффициентов симметрии по слоям
+        self.cluster_labels = None  # Метки кластеров для точек дерева
+        self.clustered_points = None  # Сохраненные кластеризованные точки
+        self.voxels = None  # Хранение вокселизированных точек
+
+    def get_active_points(self):
+        """
+        Возвращает активное представление точек дерева — либо воксели, либо исходные точки.
+        """
+        return self.voxels if self.voxels is not None else self.points
+
+    def voxelize_tree(self, voxel_size=0.1):
+        """
+        Применяет вокселизацию к облаку точек дерева.
+
+        :param voxel_size: Размер вокселя.
+        """
+        if self.points is None or self.points.shape[0] == 0:
+            print("⚠ Ошибка: У дерева нет точек для вокселизации.")
+            return
+
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(self.points)
+        voxel_grid = pcd.voxel_down_sample(voxel_size=voxel_size)
+        self.voxels = np.asarray(voxel_grid.points)
+        print(f"✅ Вокселизация завершена: {self.voxels.shape[0]} вокселей.")
+
+    def cluster_tree(self, eps=0.1, min_samples=5, remove_noise=True):
+        """
+        Выполняет кластеризацию точек дерева с помощью DBSCAN.
+
+        :param eps: Максимальное расстояние между точками для объединения в кластер.
+        :param min_samples: Минимальное количество точек в кластере.
+        :param remove_noise: Удалять ли шумовые точки (-1 метка в DBSCAN).
+        :return: Список меток кластеров для каждой точки.
+        """
+        points = self.get_active_points()
+        if points is None or points.shape[0] == 0:
+            print("⚠ Ошибка: У дерева нет точек для кластеризации.")
+            return None
+
+        clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(points)
+        labels = clustering.labels_
+
+        if remove_noise:
+            valid_points = labels != -1
+            self.clustered_points = points[valid_points]
+            labels = labels[valid_points]
+        else:
+            self.clustered_points = points
+
+        self.cluster_labels = labels
+        print(f"✅ Кластеризация завершена: найдено {len(set(labels)) - (1 if -1 in labels else 0)} кластеров.")
+        return labels
+    
+
+    def set_trunk_center(self, z_threshold=0.1, min_points=10, eps=0.05, min_samples=3):
+        """
+        Определяет центр ствола по первому слою точек с помощью DBSCAN.
+
+        :param z_threshold: Максимальная высота слоя для поиска центра ствола.
+        :param min_points: Минимальное количество точек для вычисления центра.
+        :param eps: Максимальное расстояние между точками для объединения в кластер.
+        :param min_samples: Минимальное количество точек в кластере для его выделения.
+        """
+        # Получаем точки (вокселизированные или исходные)
+        points = self.get_active_points()
+
+        if points is None or points.shape[0] == 0:
+            print("⚠ Ошибка: Облако точек пустое.")
+            return
+
+        # Передаём массив `points` (а не `self`)
+        center = find_trunk_center(points, z_threshold, min_points, eps, min_samples)
+        
+        if center:
+            self.trunk_x, self.trunk_y = center
+            print(f"✅ Центр ствола определён: X = {self.trunk_x:.2f}, Y = {self.trunk_y:.2f}")
+        else:
+            print("⚠ Недостаточно точек или кластер не найден.")
+
+
 
     def measure_tree_symmetry(self, z_step=1.0, angle_step=1):
         """
-        Оценка симметричности дерева путем анализа его слоев на различных высотах.
+        Оценивает симметричность дерева, используя координаты ствола для всех слоёв.
 
         :param z_step: Высота слоя (размер шага по Z).
         :param angle_step: Угол поворота для оценки симметрии.
         :return: Средний коэффициент симметрии (диапазон 0-1).
         """
-        # Проверка наличия координат ствола
+        points = self.get_active_points()
         if self.trunk_x is None or self.trunk_y is None:
             raise ValueError("Не заданы координаты ствола (trunk_x, trunk_y).")
 
-        # Определение диапазона высот
-        z_min, z_max = np.min(self.points[:, 2]), np.max(self.points[:, 2])
-
-        # Формирование массива высотных слоев
+        z_min, z_max = np.min(points[:, 2]), np.max(points[:, 2])
         z_levels = np.arange(z_min, z_max, z_step)
-        self.symmetry_scores_per_layer = []  # Очистка массива перед вычислениями
-
-        print("\n📢 Выполняется расчет симметрии с учетом координат ствола (X_shift, Y_shift):")
-        print(f"Ствол дерева: X = {self.trunk_x:.2f}, Y = {self.trunk_y:.2f}\n")
+        self.symmetry_scores_per_layer = []
 
         for z in z_levels:
-            # Выбор точек, находящихся в текущем слое
-            idx = np.where((self.points[:, 2] >= z) & (self.points[:, 2] < z + z_step))
-            slice_points = self.points[idx][:, :2]  # Исключение координаты Z, оставляя только X и Y
+            idx = np.where((points[:, 2] >= z) & (points[:, 2] < z + z_step))
+            slice_points = points[idx][:, :2]
 
             if slice_points.shape[0] < 10:
-                continue  # Пропуск слоев с недостаточным количеством точек
+                continue
 
-            # Использование координат ствола в качестве центра слоя
             trunk_center = np.array([self.trunk_x, self.trunk_y])
+            angle_symmetry_scores = []
 
-            print(f"  - Высота: {z:.2f} → Центр слоя (X: {trunk_center[0]:.2f}, Y: {trunk_center[1]:.2f})")
-
-            angle_symmetry_scores = []  # Массив коэффициентов симметрии для различных углов
-
-            # Выполняется поворот слоя в диапазоне от -45° до 45° с заданным шагом
             for angle in np.arange(-45, 46, angle_step):
-                # Матрица поворота для 2D-преобразования
                 rotation_matrix = np.array([
                     [np.cos(np.radians(angle)), -np.sin(np.radians(angle))],
                     [np.sin(np.radians(angle)), np.cos(np.radians(angle))]
                 ])
-
-                # Применение поворота к точкам слоя относительно ствола
                 rotated_points = (slice_points - trunk_center) @ rotation_matrix + trunk_center
-
-                # Разделение точек на левую и правую половины относительно оси симметрии
                 left_half = rotated_points[:, 0] < trunk_center[0]
                 right_half = ~left_half
-
-                # Определение коэффициента симметрии слоя
                 score = min(np.sum(left_half), np.sum(right_half)) / max(np.sum(left_half), np.sum(right_half))
+                angle_symmetry_scores.append(score)
 
-                angle_symmetry_scores.append(score)  # Добавление значения симметрии для текущего угла
-
-            # Определение среднего коэффициента симметрии для слоя
             layer_symmetry = np.mean(angle_symmetry_scores)
             self.symmetry_scores_per_layer.append(layer_symmetry)
 
-        # Определение итогового коэффициента симметрии как среднего по слоям
         self.symmetry_score = np.mean(self.symmetry_scores_per_layer) if self.symmetry_scores_per_layer else 0
-
-        print("\n✅ Расчет симметрии завершен.\n")
-
         return self.symmetry_score
+
+  
+from sklearn.cluster import DBSCAN
+
+def find_trunk_center(points, z_threshold=0.1, min_points=10, eps=0.05, min_samples=5):
+    """
+    Определяет центр ствола по точкам нижнего слоя.
+
+    :param points: Массив точек в формате numpy (X, Y, Z).
+    :param z_threshold: Высота слоя, в пределах которой выбираются точки.
+    :param min_points: Минимальное количество точек для определения центра.
+    :param eps: Максимальное расстояние между точками для кластеризации (DBSCAN).
+    :param min_samples: Минимальное количество точек в кластере (DBSCAN).
+    :return: Координаты центра ствола (X, Y) или None, если точек недостаточно.
+    """
+    if points is None or points.shape[0] == 0:
+        print("⚠ Ошибка: Нет точек для поиска центра ствола.")
+        return None
+
+    # Отбор точек на нижнем слое
+    min_z = np.min(points[:, 2])
+    layer_points = points[points[:, 2] <= min_z + z_threshold]
+
+    if layer_points.shape[0] < min_points:
+        print("⚠ Недостаточно точек в нижнем слое для поиска центра ствола.")
+        return None
+
+    # Применение DBSCAN для удаления выбросов и выделения основного кластера
+    clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(layer_points[:, :2])
+    labels = clustering.labels_
+
+    # Оставляем только точки основного кластера (исключаем шум -1)
+    core_points = layer_points[labels != -1]
+
+    if core_points.shape[0] < min_points:
+        print("⚠ Кластеризация не смогла выделить достаточный основной кластер.")
+        return None
+
+    # Вычисление центра ствола как среднего значения X и Y
+    trunk_x, trunk_y = np.mean(core_points[:, :2], axis=0)
+    print(f"✅ Центр ствола найден: X = {trunk_x:.2f}, Y = {trunk_y:.2f}")
+    return trunk_x, trunk_y
