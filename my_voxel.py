@@ -11,82 +11,68 @@ from classes.PCD_TREE import PCD_TREE
 
 def visualize_tree(tree, point_size=5.0, transform="xy_to_xz"):
     """
-    Визуализирует одно дерево (PCD_TREE) с Open3D, окрашивая точки по высоте (Z) с чёрным фоном.
-    Перед визуализацией выполняется переориентация облака точек.
+    Визуализирует дерево в Open3D с цветовой кодировкой:
+    - Оригинальные точки окрашены по высоте (Z)
+    - Восстановленные точки отображаются красным цветом
 
     :param tree: объект PCD_TREE
     :param point_size: размер точек
-    :param transform: тип трансформации перед визуализацией ("xy_to_xz", "xy_to_yz", "flip_xy", "flip_xz", "flip_yz")
+    :param transform: тип трансформации перед визуализацией ("xy_to_xz", "xy_to_yz", и т. д.)
     """
-    # Проверка наличия точек для визуализации
-    if tree.points is None or tree.points.shape[0] == 0:
+    points = tree.get_active_points()
+    
+    if points is None or points.shape[0] == 0:
         print("⚠ Ошибка: У дерева нет точек для визуализации.")
         return
 
-    # Проверка наличия координат ствола
-    if tree.trunk_x is None or tree.trunk_y is None:
-        print("⚠ Ошибка: Не заданы координаты ствола для визуализации.")
-        return
-
-    # Создание окна визуализации
     vis = o3d.visualization.Visualizer()
     vis.create_window()
 
-    # Копирование точек перед трансформацией
+    # Определяем точки, которые были восстановлены
+    if hasattr(tree, "recovered_voxels") and tree.recovered_voxels is not None:
+        original_voxels = np.array([p for p in points if not any(np.all(np.isclose(p, tree.recovered_voxels), axis=1))])
+        recovered_voxels = tree.recovered_voxels
+    else:
+        original_voxels = points
+        recovered_voxels = np.empty((0, 3))
+
+    # Создаём облако точек
     pcd = o3d.geometry.PointCloud()
-    points = tree.points.copy()
+    pcd.points = o3d.utility.Vector3dVector(original_voxels)
 
-    # ✅ Отметка центра ствола (будет отображена как красная точка)
-    trunk_center = np.array([[tree.trunk_x, tree.trunk_y, np.min(points[:, 2])]])
-
-    # Применение трансформации перед визуализацией
-    if transform == "xy_to_xz":
-        points = points[:, [0, 2, 1]]    # Замена Y ↔ Z
-        trunk_center = trunk_center[:, [0, 2, 1]]
-    elif transform == "xy_to_yz":
-        points = points[:, [2, 1, 0]]    # Замена X ↔ Z
-        trunk_center = trunk_center[:, [2, 1, 0]]
-    elif transform == "flip_xy":
-        points[:, :2] *= -1              # Отражение по XY
-        trunk_center[:, :2] *= -1
-    elif transform == "flip_xz":
-        points[:, [0, 2]] *= -1          # Отражение по XZ
-        trunk_center[:, [0, 2]] *= -1
-    elif transform == "flip_yz":
-        points[:, [1, 2]] *= -1          # Отражение по YZ
-        trunk_center[:, [1, 2]] *= -1
-
-    # Обновление точек в Open3D
-    pcd.points = o3d.utility.Vector3dVector(points)
-
-    # Окрашивание точек по высоте (Z)
-    z_min, z_max = np.min(points[:, 2]), np.max(points[:, 2])
-    norm_z = (points[:, 2] - z_min) / (z_max - z_min)  # Нормализация в диапазоне [0, 1]
+    # Цвета по высоте (Z)
+    z_min, z_max = np.min(original_voxels[:, 2]), np.max(original_voxels[:, 2])
+    norm_z = (original_voxels[:, 2] - z_min) / (z_max - z_min)
     colormap = cm.get_cmap("plasma")
-    colors = colormap(norm_z)[:, :3]
-    pcd.colors = o3d.utility.Vector3dVector(colors)
+    original_colors = colormap(norm_z)[:, :3]
 
-    # Добавление облака точек дерева в визуализацию
+    # Восстановленные точки – красные
+    recovered_pcd = o3d.geometry.PointCloud()
+    recovered_pcd.points = o3d.utility.Vector3dVector(recovered_voxels)
+    recovered_colors = np.full((recovered_voxels.shape[0], 3), [1, 0, 0])  # Красный цвет
+
+    # Применяем цвета
+    pcd.colors = o3d.utility.Vector3dVector(original_colors)
+    recovered_pcd.colors = o3d.utility.Vector3dVector(recovered_colors)
+
+    # Добавляем в сцену
     vis.add_geometry(pcd)
+    vis.add_geometry(recovered_pcd)
 
-    # ✅ Добавление точки ствола (красная точка)
-    trunk_pcd = o3d.geometry.PointCloud()
-    trunk_pcd.points = o3d.utility.Vector3dVector(trunk_center)
-    trunk_pcd.colors = o3d.utility.Vector3dVector([[1, 0, 0]])  # Красный цвет
-    vis.add_geometry(trunk_pcd)
+    # Центр ствола (красная точка)
+    if tree.trunk_x is not None and tree.trunk_y is not None:
+        trunk_pcd = o3d.geometry.PointCloud()
+        trunk_pcd.points = o3d.utility.Vector3dVector([[tree.trunk_x, tree.trunk_y, np.min(points[:, 2])]])
+        trunk_pcd.colors = o3d.utility.Vector3dVector([[1, 0, 0]])  # Красный
+        vis.add_geometry(trunk_pcd)
 
-    # Настройка чёрного фона и размеров точек
+    # Настройки визуализации
     render_opt = vis.get_render_option()
     render_opt.background_color = np.array([0, 0, 0])
     render_opt.point_size = point_size
 
-    # Вывод коэффициента симметрии в консоль
-    print(f"Tree | Symmetry Score: {tree.symmetry_score:.2f}")
-
-    # Запуск визуализации
     vis.run()
     vis.destroy_window()
-
 
 
 def create_tree_rotation_gif(tree, tree_id, gif_path="tree_rotation.gif", point_size=5.0, num_frames=36, transform="xy_to_xz", z_step=1.0):
@@ -513,6 +499,7 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
     """
     Визуализирует дерево (PCD_TREE) в интерактивном окне Open3D.
     Отображает окраску по слоям, центр ствола, поддерживает вокселизацию.
+    Восстановленные точки отображаются красным цветом.
 
     :param tree: объект PCD_TREE
     :param point_size: размер точек
@@ -531,6 +518,11 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
     if tree.trunk_x is None or tree.trunk_y is None:
         print("⚠ Ошибка: Не заданы координаты ствола для визуализации.")
         return
+
+    # Если есть восстановленные точки, используем 4-ю координату (метку)
+    if points.shape[1] == 4:
+        recovered_mask = points[:, 3] == 1  # Фильтр восстановленных точек
+        points = points[:, :3]  # Оставляем только XYZ
 
     # Создание облака точек
     pcd = o3d.geometry.PointCloud()
@@ -559,6 +551,10 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
         # Чередование цветовой палитры
         colormap = cm.get_cmap(colormap_pair[i % 2])
         colors[idx] = colormap(norm_distances)[:, :3]
+
+    # Если есть восстановленные точки — делаем их красными 🔥
+    if "recovered_mask" in locals():
+        colors[recovered_mask] = [1, 0, 0]  # Красный цвет
 
     # Применение трансформации координат
     trunk_center = np.array([[trunk_x, trunk_y, np.min(points[:, 2])]])
@@ -614,9 +610,8 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
 
 
 
-
 tree = PCD_TREE()  # Создаём объект дерева
-tree.open("D:/data/symmetry/tree_0098.pcd")  # Загружаем точки из файла
+tree.open("D:/data/symmetry/tree_0099.pcd")  # Загружаем точки из файла
 tree.set_trunk_center(z_threshold=0.1, min_points=10)
 
 

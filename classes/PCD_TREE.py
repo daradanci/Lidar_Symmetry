@@ -653,7 +653,10 @@ class PCD_TREE(PCD):
 
         print(f"🛠 Восстановление симметрии ({len(z_levels)} слоев) с учётом объёма...")
 
-        new_voxels = self.voxels.copy()
+        # Добавляем к существующим вокселям метку (0 = оригинальная точка)
+        new_voxels = np.column_stack((self.voxels, np.zeros(self.voxels.shape[0])))
+
+        recovered_voxels = []  # Список для хранения восстановленных точек
 
         for i, z in enumerate(z_levels):
             idx = np.where((self.voxels[:, 2] >= z) & (self.voxels[:, 2] < z + z_step))
@@ -688,7 +691,7 @@ class PCD_TREE(PCD):
                     # Добавляем случайное смещение по Z внутри слоя
                     mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
                     if np.random.rand() < recovery_strength:
-                        missing_right.append(mirror_voxel)
+                        missing_right.append(np.append(mirror_voxel, 1))  # 1 = восстановленная точка
 
             for voxel in right_half:
                 mirror_voxel = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2]])
@@ -696,17 +699,19 @@ class PCD_TREE(PCD):
                 if not np.any(np.all(np.isclose(mirror_voxel[:2], left_half[:, :2], atol=voxel_size), axis=1)):
                     mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
                     if np.random.rand() < recovery_strength:
-                        missing_left.append(mirror_voxel)
+                        missing_left.append(np.append(mirror_voxel, 1))  # 1 = восстановленная точка
 
             # Преобразуем в numpy массивы и добавляем воксели в общую структуру
-            missing_right = np.array(missing_right) if missing_right else np.empty((0, 3))
-            missing_left = np.array(missing_left) if missing_left else np.empty((0, 3))
+            missing_right = np.array(missing_right) if missing_right else np.empty((0, 4))
+            missing_left = np.array(missing_left) if missing_left else np.empty((0, 4))
 
             new_voxels = np.vstack([new_voxels] + [arr for arr in [missing_right, missing_left] if arr.size > 0])
+            recovered_voxels.extend(missing_right)
+            recovered_voxels.extend(missing_left)
 
         self.voxels = new_voxels
+        self.recovered_voxels = np.array(recovered_voxels) if recovered_voxels else np.empty((0, 4))  # Отдельно храним восстановленные
         print(f"✅ Восстановление завершено с учётом объёма.")
-
 
   
 from sklearn.cluster import DBSCAN
