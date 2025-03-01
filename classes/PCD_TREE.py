@@ -627,6 +627,87 @@ class PCD_TREE(PCD):
         self.symmetry_score = np.mean(self.symmetry_scores_per_layer) if self.symmetry_scores_per_layer else 0
         return self.symmetry_score
 
+
+
+
+
+
+    def restore_symmetry(self, z_step=1.0, symmetry_threshold=0.9, voxel_size=0.1):
+        """
+        Восстанавливает симметрию дерева, используя воксельное представление.
+
+        :param z_step: Высота слоя (по умолчанию 1.0 м)
+        :param symmetry_threshold: Порог симметрии (если выше, не восстанавливаем)
+        :param voxel_size: Размер вокселя для поиска соседних точек
+        """
+        if self.voxels is None:
+            print("🔄 Вокселизация перед восстановлением...")
+            self.voxelize_tree(voxel_size=voxel_size)
+
+        if self.trunk_x is None or self.trunk_y is None:
+            print("⚠ Ошибка: Не заданы координаты ствола (trunk_x, trunk_y).")
+            return
+
+        z_min, z_max = np.min(self.voxels[:, 2]), np.max(self.voxels[:, 2])
+        z_levels = np.arange(z_min, z_max, z_step)
+
+        print(f"🛠 Восстановление симметрии ({len(z_levels)} слоев) с учётом объёма...")
+
+        new_voxels = self.voxels.copy()
+
+        for i, z in enumerate(z_levels):
+            idx = np.where((self.voxels[:, 2] >= z) & (self.voxels[:, 2] < z + z_step))
+            layer_voxels = self.voxels[idx]
+
+            if layer_voxels.shape[0] == 0:
+                continue
+
+            trunk_center = np.array([self.trunk_x, self.trunk_y])
+
+            # Получаем коэффициент симметрии слоя (если есть, иначе 1)
+            symmetry_factor = self.symmetry_scores_per_layer[i] if i < len(self.symmetry_scores_per_layer) else 1.0
+
+            # Если слой уже почти симметричен, не трогаем его
+            if symmetry_factor >= symmetry_threshold:
+                continue
+
+            # Масштабируемое восстановление: чем ниже симметрия, тем больше точек восстанавливается
+            recovery_strength = 1 - symmetry_factor  # Чем ниже симметрия, тем выше recovery_strength
+
+            left_half = layer_voxels[layer_voxels[:, 0] < self.trunk_x]
+            right_half = layer_voxels[layer_voxels[:, 0] > self.trunk_x]
+
+            missing_right = []
+            missing_left = []
+
+            for voxel in left_half:
+                mirror_voxel = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2]])
+
+                # Проверяем наличие зеркальной точки в правой части
+                if not np.any(np.all(np.isclose(mirror_voxel[:2], right_half[:, :2], atol=voxel_size), axis=1)):
+                    # Добавляем случайное смещение по Z внутри слоя
+                    mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
+                    if np.random.rand() < recovery_strength:
+                        missing_right.append(mirror_voxel)
+
+            for voxel in right_half:
+                mirror_voxel = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2]])
+
+                if not np.any(np.all(np.isclose(mirror_voxel[:2], left_half[:, :2], atol=voxel_size), axis=1)):
+                    mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
+                    if np.random.rand() < recovery_strength:
+                        missing_left.append(mirror_voxel)
+
+            # Преобразуем в numpy массивы и добавляем воксели в общую структуру
+            missing_right = np.array(missing_right) if missing_right else np.empty((0, 3))
+            missing_left = np.array(missing_left) if missing_left else np.empty((0, 3))
+
+            new_voxels = np.vstack([new_voxels] + [arr for arr in [missing_right, missing_left] if arr.size > 0])
+
+        self.voxels = new_voxels
+        print(f"✅ Восстановление завершено с учётом объёма.")
+
+
   
 from sklearn.cluster import DBSCAN
 
