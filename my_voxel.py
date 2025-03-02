@@ -633,33 +633,37 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
 # visualize_tree_interactive(tree, transform="xy_to_xz", point_size=3.0)
 
 
-# Загружаем деревья 98 и 99
 tree_98 = PCD_TREE()
 tree_98.open("D:\\data\\symmetry\\tree_0098.pcd", verbose=True)
 tree_98.set_trunk_center(z_threshold=0.1, min_points=10)
 tree_98.find_tree_top()
 tree_98.file_path = "D:\\data\\symmetry\\tree_0098.pcd"
-tree_98.voxelize_tree(voxel_size=0.1)  # Применяем вокселизацию
+visualize_tree_interactive(tree_98)
+tree_98.voxelize_tree(voxel_size=0.15) 
 
 tree_99 = PCD_TREE()
 tree_99.open("D:\\data\\symmetry\\tree_0099.pcd", verbose=True)
 tree_99.set_trunk_center(z_threshold=0.1, min_points=10)
 tree_99.find_tree_top()
 tree_99.file_path = "D:\\data\\symmetry\\tree_0099.pcd"
-tree_99.voxelize_tree(voxel_size=0.1)
+visualize_tree_interactive(tree_99)
+
+tree_99.voxelize_tree(voxel_size=0.15)
 
 tree_98.measure_tree_symmetry(z_step=1)
 tree_99.measure_tree_symmetry(z_step=1)
 
-print(f"До переноса: {len(tree_99.voxels)}")
-tree_99.restore_symmetry(neighbor_trees=[tree_98], z_step=1.0, voxel_size=0.1)
-print(f"После переноса: {len(tree_99.voxels)}")
+
 
 
 print(f"До переноса: {len(tree_98.voxels)}")
 tree_98.restore_symmetry(neighbor_trees=[tree_99], z_step=1.0, voxel_size=0.1)
 print(f"После переноса: {len(tree_98.voxels)}")
 
+
+print(f"До переноса: {len(tree_99.voxels)}")
+tree_99.restore_symmetry(neighbor_trees=[tree_98], z_step=1.0, voxel_size=0.1)
+print(f"После переноса: {len(tree_99.voxels)}")
 
 
 if tree_98.recovered_voxels.shape[0] > 0:
