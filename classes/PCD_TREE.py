@@ -501,11 +501,14 @@ class PCD_TREE(PCD):
         super().__init__(points, intensity)
         self.trunk_x = trunk_x  # Координата X ствола
         self.trunk_y = trunk_y  # Координата Y ствола
+        self.tree_top = None  # Координаты макушки дерева (X, Y, Z)
+        self.layer_centers = {}  # Словарь центров каждого слоя
         self.symmetry_score = None  # Общий коэффициент симметрии дерева
         self.symmetry_scores_per_layer = []  # Массив коэффициентов симметрии по слоям
         self.cluster_labels = None  # Метки кластеров для точек дерева
         self.clustered_points = None  # Сохраненные кластеризованные точки
         self.voxels = None  # Хранение вокселизированных точек
+
 
     def get_active_points(self):
         """
@@ -557,6 +560,100 @@ class PCD_TREE(PCD):
         print(f"✅ Кластеризация завершена: найдено {len(set(labels)) - (1 if -1 in labels else 0)} кластеров.")
         return labels
     
+    def find_tree_top(self):
+        """
+        Определяет макушку дерева как самую верхнюю точку.
+
+        :return: Координаты макушки дерева (X, Y, Z) или None, если точек недостаточно.
+        """
+        points = self.get_active_points()
+        if points is None or points.shape[0] == 0:
+            print("⚠ Ошибка: У дерева нет точек.")
+            return None
+
+        # 🔎 Поиск самой высокой точки (максимальное Z)
+        top_idx = np.argmax(points[:, 2])
+        tree_top = points[top_idx]
+
+        self.tree_top = tuple(tree_top)  # Сохраняем в формате (X, Y, Z)
+        print(f"🌲 Макушка дерева найдена: X = {tree_top[0]:.2f}, Y = {tree_top[1]:.2f}, Z = {tree_top[2]:.2f}")
+        return self.tree_top
+
+    def generate_layer_polygon(self, z, voxel_size=0.1):
+        """
+        Генерирует многоугольник слоя на высоте z.
+
+        :param z: высота слоя
+        :param voxel_size: минимальное расстояние между точками (размер вокселя)
+        """
+        points = self.get_active_points()
+        if points is None or points.shape[0] == 0:
+            print("⚠ Ошибка: У дерева нет точек для построения многоугольников.")
+            return
+
+        idx = np.where((points[:, 2] >= z) & (points[:, 2] < z + voxel_size))
+        layer_voxels = points[idx]
+
+        if layer_voxels.shape[0] < 3:
+            return  # Недостаточно точек для построения многоугольника
+
+        points_2d = layer_voxels[:, :2]  # Берём только X и Y координаты
+        polygon_points = []
+
+        try:
+            # 📌 Строим выпуклую оболочку (Convex Hull)
+            hull = ConvexHull(points_2d)
+            polygon = points_2d[hull.vertices]
+        except:
+            # Если оболочка не строится, создаем правильный шестиугольник
+            avg_radius = np.mean(np.linalg.norm(points_2d - np.array([self.trunk_x, self.trunk_y]), axis=1))
+            angles = np.linspace(0, 2 * np.pi, 7)[:-1]  # 6 направлений
+            polygon = np.column_stack((self.trunk_x + avg_radius * np.cos(angles),
+                                       self.trunk_y + avg_radius * np.sin(angles)))
+
+        # Добавляем вершины многоугольника (метка 3)
+        for point in polygon:
+            polygon_points.append([point[0], point[1], z, 3])
+
+        # 🔗 Добавляем промежуточные точки на границах многоугольника
+        for j in range(len(polygon)):
+            p1 = polygon[j]
+            p2 = polygon[(j + 1) % len(polygon)]  # Замыкаем контур
+
+            num_steps = max(1, int(np.linalg.norm(p1 - p2) / voxel_size))
+            for step in range(num_steps):
+                interp_point = p1 + (p2 - p1) * (step / num_steps)
+                polygon_points.append([interp_point[0], interp_point[1], z, 3])
+
+        # 📌 Добавляем многоугольник к облаку точек
+        polygon_points = np.array(polygon_points)
+        if self.voxels is None:
+            self.voxels = polygon_points
+        else:
+            self.voxels = np.vstack([self.voxels, polygon_points])
+
+
+    def generate_all_layer_polygons(self, z_step=1.0, voxel_size=0.1):
+        """
+        Генерирует многоугольники для всех слоев дерева.
+
+        :param z_step: шаг по высоте
+        :param voxel_size: размер вокселя (для построения границ)
+        """
+        points = self.get_active_points()
+        if points is None or points.shape[0] == 0:
+            print("⚠ Ошибка: У дерева нет точек для построения многоугольников.")
+            return
+
+        z_min, z_max = np.min(points[:, 2]), np.max(points[:, 2])
+        z_levels = np.arange(z_min, z_max, z_step)
+
+        print(f"🛠 Генерация многоугольников для {len(z_levels)} слоев...")
+        for z in z_levels:
+            self.generate_layer_polygon(z, voxel_size)
+
+        print("✅ Завершено построение многоугольников.")
+
 
     def set_trunk_center(self, z_threshold=0.1, min_points=10, eps=0.05, min_samples=3):
         """
@@ -695,20 +792,29 @@ class PCD_TREE(PCD):
 
                     # Восстановление симметрии (генерация точек)
                     for voxel in left_half:
-                        mirror_voxel = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2], 2])  # Метка 2
+                        # Зеркальное отражение по X
+                        mirror_voxel_x = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2], 2])
+                        # Зеркальное отражение по Y
+                        mirror_voxel_y = np.array([voxel[0], 2 * self.trunk_y - voxel[1], voxel[2], 2])
+                        # Зеркальное отражение по XY
+                        mirror_voxel_xy = np.array([2 * self.trunk_x - voxel[0], 2 * self.trunk_y - voxel[1], voxel[2], 2])
 
-                        if not np.any(np.all(np.isclose(mirror_voxel[:3], right_half[:, :3], atol=voxel_size), axis=1)):
-                            mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
+                        # Добавляем случайный шум по Z для плавности
+                        for mv in [mirror_voxel_x, mirror_voxel_y, mirror_voxel_xy]:
+                            mv[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
                             if np.random.rand() < recovery_strength:
-                                generated_points.append(mirror_voxel)
+                                generated_points.append(mv)
 
                     for voxel in right_half:
-                        mirror_voxel = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2], 2])  # Метка 2
+                        mirror_voxel_x = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2], 2])
+                        mirror_voxel_y = np.array([voxel[0], 2 * self.trunk_y - voxel[1], voxel[2], 2])
+                        mirror_voxel_xy = np.array([2 * self.trunk_x - voxel[0], 2 * self.trunk_y - voxel[1], voxel[2], 2])
 
-                        if not np.any(np.all(np.isclose(mirror_voxel[:3], left_half[:, :3], atol=voxel_size), axis=1)):
-                            mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
+                        for mv in [mirror_voxel_x, mirror_voxel_y, mirror_voxel_xy]:
+                            mv[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
                             if np.random.rand() < recovery_strength:
-                                generated_points.append(mirror_voxel)
+                                generated_points.append(mv)
+
 
                 # Балансировка точек между деревьями
                 for voxel in layer_voxels:

@@ -501,6 +501,7 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
     Визуализирует дерево (PCD_TREE) в интерактивном окне Open3D.
     Восстановленные точки (метка 1) отображаются с красным градиентом.
     Сгенерированные точки (метка 2) отображаются с синим градиентом.
+    Точки многоугольников (метка 3) отображаются ярко-голубым цветом.
 
     :param tree: объект PCD_TREE
     :param point_size: размер точек
@@ -520,6 +521,8 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
     # Определяем маски для разных типов точек
     recovered_mask = (points[:, 3] == 1) if points.shape[1] == 4 else np.zeros(points.shape[0], dtype=bool)
     generated_mask = (points[:, 3] == 2) if points.shape[1] == 4 else np.zeros(points.shape[0], dtype=bool)
+    polygon_mask = (points[:, 3] == 3) if points.shape[1] == 4 else np.zeros(points.shape[0], dtype=bool)
+    
     points = points[:, :3]  # Используем только XYZ
 
     pcd = o3d.geometry.PointCloud()
@@ -562,6 +565,10 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
 
         blue_gradient = np.column_stack((np.zeros_like(norm_generated_distances), np.zeros_like(norm_generated_distances), 0.3 + norm_generated_distances * 0.7))
         colors[generated_mask] = blue_gradient
+
+    # 🔷 Ярко-голубой цвет для точек многоугольников (метка 3)
+    if np.any(polygon_mask):
+        colors[polygon_mask] = np.array([0.2, 0.8, 1.0])  # Голубой цвет
 
     # Центр ствола
     trunk_center = np.array([[trunk_x, trunk_y, np.min(points[:, 2])]])
@@ -609,6 +616,8 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
     vis.run()
     vis.destroy_window()
 
+
+
 # tree = PCD_TREE()  # Создаём объект дерева
 # tree.open("D:/data/symmetry/tree_0099.pcd")  # Загружаем точки из файла
 # tree.set_trunk_center(z_threshold=0.1, min_points=10)
@@ -628,12 +637,14 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
 tree_98 = PCD_TREE()
 tree_98.open("D:\\data\\symmetry\\tree_0098.pcd", verbose=True)
 tree_98.set_trunk_center(z_threshold=0.1, min_points=10)
+tree_98.find_tree_top()
 tree_98.file_path = "D:\\data\\symmetry\\tree_0098.pcd"
 tree_98.voxelize_tree(voxel_size=0.1)  # Применяем вокселизацию
 
 tree_99 = PCD_TREE()
 tree_99.open("D:\\data\\symmetry\\tree_0099.pcd", verbose=True)
 tree_99.set_trunk_center(z_threshold=0.1, min_points=10)
+tree_99.find_tree_top()
 tree_99.file_path = "D:\\data\\symmetry\\tree_0099.pcd"
 tree_99.voxelize_tree(voxel_size=0.1)
 
@@ -661,6 +672,9 @@ if tree_99.recovered_voxels.shape[0] > 0:
 else:
     print("⚠ Нет восстановленных точек для дерева 99!")
 
+
+tree_98.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
+tree_99.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
 
 visualize_tree_interactive(tree_98)
 visualize_tree_interactive(tree_99)
