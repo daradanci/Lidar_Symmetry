@@ -610,16 +610,50 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
 
 
 
-tree = PCD_TREE()  # Создаём объект дерева
-tree.open("D:/data/symmetry/tree_0099.pcd")  # Загружаем точки из файла
-tree.set_trunk_center(z_threshold=0.1, min_points=10)
+# tree = PCD_TREE()  # Создаём объект дерева
+# tree.open("D:/data/symmetry/tree_0099.pcd")  # Загружаем точки из файла
+# tree.set_trunk_center(z_threshold=0.1, min_points=10)
 
 
 
-tree.voxelize_tree(0.1)  # Вокселизация
+# tree.voxelize_tree(0.1)  # Вокселизация
 
-visualize_tree_interactive(tree, transform="xy_to_xz", point_size=3.0)
+# visualize_tree_interactive(tree, transform="xy_to_xz", point_size=3.0)
 
-tree.measure_tree_symmetry(z_step=1.0)
-tree.restore_symmetry()
-visualize_tree_interactive(tree, transform="xy_to_xz", point_size=3.0)
+# tree.measure_tree_symmetry(z_step=1.0)
+# tree.restore_symmetry()
+# visualize_tree_interactive(tree, transform="xy_to_xz", point_size=3.0)
+
+
+# Загружаем деревья 98 и 99
+tree_98 = PCD_TREE()
+tree_98.open("D:\\data\\symmetry\\tree_0098.pcd", verbose=True)
+tree_98.set_trunk_center(z_threshold=0.1, min_points=10)
+tree_98.file_path = "D:\\data\\symmetry\\tree_0098.pcd"
+tree_98.voxelize_tree(voxel_size=0.1)  # Применяем вокселизацию
+
+tree_99 = PCD_TREE()
+tree_99.open("D:\\data\\symmetry\\tree_0099.pcd", verbose=True)
+tree_99.set_trunk_center(z_threshold=0.1, min_points=10)
+tree_99.file_path = "D:\\data\\symmetry\\tree_0099.pcd"
+tree_99.voxelize_tree(voxel_size=0.1)
+
+tree_98.measure_tree_symmetry(z_step=1)
+tree_99.measure_tree_symmetry(z_step=1)
+
+tree_98.restore_symmetry(neighbor_trees=[tree_99], z_step=1.0, symmetry_threshold=0.9, voxel_size=0.1)
+tree_99.restore_symmetry(neighbor_trees=[tree_98], z_step=1.0, symmetry_threshold=0.9, voxel_size=0.1)
+
+if tree_98.recovered_voxels.shape[0] > 0:
+    print(f"🔴 Восстановленные точки для дерева 98 (первые 10):\n", tree_98.recovered_voxels[:10])
+else:
+    print("⚠ Нет восстановленных точек для дерева 98!")
+
+if tree_99.recovered_voxels.shape[0] > 0:
+    print(f"🔴 Восстановленные точки для дерева 99 (первые 10):\n", tree_99.recovered_voxels[:10])
+else:
+    print("⚠ Нет восстановленных точек для дерева 99!")
+
+
+visualize_tree_interactive(tree_98)
+visualize_tree_interactive(tree_99)
