@@ -629,13 +629,12 @@ class PCD_TREE(PCD):
 
 
 
-    def restore_symmetry(self, neighbor_trees=None, z_step=1.0, symmetry_threshold=0.9, voxel_size=0.1):
+    def restore_symmetry(self, neighbor_trees=None, z_step=1.0, voxel_size=0.1):
         """
-        Восстанавливает симметрию дерева, используя воксельное представление с учетом соседних деревьев.
+        Переносит чужие точки обратно в соседние деревья.
 
-        :param neighbor_trees: Список соседних деревьев для обмена точками.
+        :param neighbor_trees: Список соседних деревьев.
         :param z_step: Высота слоя
-        :param symmetry_threshold: Порог симметрии (если выше, не восстанавливаем)
         :param voxel_size: Размер вокселя для поиска соседних точек
         """
         if self.voxels is None:
@@ -652,72 +651,8 @@ class PCD_TREE(PCD):
         z_min, z_max = np.min(self.voxels[:, 2]), np.max(self.voxels[:, 2])
         z_levels = np.arange(z_min, z_max, z_step)
 
-        print(f"🛠 Восстановление симметрии ({len(z_levels)} слоев) с учётом соседей...")
+        print(f"🛠 Перенос точек между деревьями ({len(z_levels)} слоев)...")
 
-        # Добавляем к вокселям метку (0 = оригинальная точка)
-        new_voxels = np.column_stack((self.voxels, np.zeros(self.voxels.shape[0])))
-        recovered_voxels = []  
-
-        for i, z in enumerate(z_levels):
-            idx = np.where((self.voxels[:, 2] >= z) & (self.voxels[:, 2] < z + z_step))
-            layer_voxels = self.voxels[idx]
-
-            if layer_voxels.shape[0] == 0:
-                continue
-
-            trunk_center = np.array([self.trunk_x, self.trunk_y])
-
-            # Получаем коэффициент симметрии слоя
-            symmetry_factor = self.symmetry_scores_per_layer[i] if i < len(self.symmetry_scores_per_layer) else 1.0
-            print(f"📊 Симметрия слоя {i} (z={z:.2f} м): {symmetry_factor:.2f}")
-
-            if symmetry_factor >= symmetry_threshold:
-                print(f"✅ Слой {i} (z={z:.2f} м) уже симметричен, пропускаем.")
-                continue
-
-            recovery_strength = 1 - symmetry_factor
-            print(f"🔄 Коэффициент восстановления: {recovery_strength:.2f}")
-
-            left_half = layer_voxels[layer_voxels[:, 0] < self.trunk_x]
-            right_half = layer_voxels[layer_voxels[:, 0] > self.trunk_x]
-            print(f"📌 Слой {z:.2f}: {len(left_half)} левых, {len(right_half)} правых точек")
-
-            missing_right = []
-            missing_left = []
-
-            for voxel in left_half:
-                mirror_voxel = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2]])
-
-                if np.any(np.all(np.isclose(mirror_voxel[:2], right_half[:, :2], atol=voxel_size), axis=1)):
-                    continue
-
-                mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
-                if np.random.rand() < recovery_strength:
-                    missing_right.append(np.append(mirror_voxel, 1))
-
-            for voxel in right_half:
-                mirror_voxel = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2]])
-
-                if np.any(np.all(np.isclose(mirror_voxel[:2], left_half[:, :2], atol=voxel_size), axis=1)):
-                    continue
-
-                mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
-                if np.random.rand() < recovery_strength:
-                    missing_left.append(np.append(mirror_voxel, 1))
-
-            print(f"➕ {len(missing_right)} точек добавлено справа, {len(missing_left)} слева")
-
-            missing_right = np.array(missing_right) if missing_right else np.empty((0, 4))
-            missing_left = np.array(missing_left) if missing_left else np.empty((0, 4))
-
-            new_voxels = np.vstack([new_voxels] + [arr for arr in [missing_right, missing_left] if arr.size > 0])
-            recovered_voxels.extend(missing_right)
-            recovered_voxels.extend(missing_left)
-
-        self.voxels = new_voxels
-        self.recovered_voxels = np.array(recovered_voxels) if recovered_voxels else np.empty((0, 4))
-
-        # 🔴 **Отщепление точек у соседнего дерева**
         for neighbor in neighbor_trees:
             if neighbor.voxels is None or neighbor.voxels.shape[0] == 0:
                 continue
@@ -725,28 +660,49 @@ class PCD_TREE(PCD):
             if not hasattr(neighbor, "recovered_voxels"):
                 neighbor.recovered_voxels = np.empty((0, 4))
 
-            removed_from_neighbors = []
+            removed_from_self = []
+            added_to_neighbor = []
 
-            for voxel in self.recovered_voxels:
-                condition = np.any(np.all(np.isclose(voxel[:2], neighbor.voxels[:, :2], atol=voxel_size), axis=1))
-                if condition:
-                    removed_from_neighbors.append(voxel)
+            for i, z in enumerate(z_levels):
+                idx = np.where((self.voxels[:, 2] >= z) & (self.voxels[:, 2] < z + z_step))
+                layer_voxels = self.voxels[idx]
 
-            removed_from_neighbors = np.array(removed_from_neighbors) if removed_from_neighbors else np.empty((0, 4))
+                if layer_voxels.shape[0] == 0:
+                    continue
 
-            # Удаляем найденные точки из соседнего дерева
-            initial_count = len(neighbor.voxels)
-            if removed_from_neighbors.shape[0] > 0:
-                neighbor.voxels = np.array([
-                    v for v in neighbor.voxels if not np.any(np.all(np.isclose(v[:2], removed_from_neighbors[:, :2], atol=voxel_size), axis=1))
+                for voxel in layer_voxels:
+                    dist_self = np.linalg.norm(voxel[:2] - np.array([self.trunk_x, self.trunk_y]))
+                    dist_neighbor = np.linalg.norm(voxel[:2] - np.array([neighbor.trunk_x, neighbor.trunk_y]))
+
+                    if dist_neighbor < dist_self:  # Если точка ближе к соседу
+                        removed_from_self.append(voxel[:3])  # Оставляем только XYZ
+                        added_to_neighbor.append(np.append(voxel[:3], 1))  # Добавляем метку
+
+            # Удаляем точки у текущего дерева (оставляем только XYZ для сравнения)
+            if removed_from_self:
+                removed_from_self = np.array(removed_from_self)  # Преобразуем в numpy-массив
+                self.voxels = np.array([
+                    v for v in self.voxels if not np.any(np.all(np.isclose(v[:3], removed_from_self, atol=voxel_size), axis=1))
                 ])
-                neighbor.recovered_voxels = np.vstack([neighbor.recovered_voxels, removed_from_neighbors]) if neighbor.recovered_voxels.size else removed_from_neighbors
 
-            removed_count = initial_count - len(neighbor.voxels)
-            print(f"🔻 Удалено {removed_count} точек из дерева {neighbor.file_path}")
-        
-        print(f"✅ Восстановление завершено с учётом соседей.")
+                # 🛠 **Исправлено:** Дополняем `removed_from_self` четвёртым столбцом (0 = точка удалена)
+                removed_from_self = np.column_stack((removed_from_self, np.zeros(removed_from_self.shape[0])))
 
+                self.recovered_voxels = np.vstack([self.recovered_voxels, removed_from_self]) if self.recovered_voxels.size else removed_from_self
+
+            # Приводим формат `neighbor.voxels` к 4 столбцам, если нужно
+            if neighbor.voxels.shape[1] == 3:
+                neighbor.voxels = np.column_stack((neighbor.voxels, np.zeros(neighbor.voxels.shape[0])))
+
+            # Добавляем точки соседу
+            if added_to_neighbor:
+                added_to_neighbor = np.array(added_to_neighbor)
+                neighbor.voxels = np.vstack([neighbor.voxels, added_to_neighbor])
+                neighbor.recovered_voxels = np.vstack([neighbor.recovered_voxels, added_to_neighbor]) if neighbor.recovered_voxels.size else added_to_neighbor
+
+            print(f"🔄 Перенос из {self.file_path} → {neighbor.file_path}: {len(removed_from_self)} точек.")
+
+        print(f"✅ Завершён перенос точек между деревьями.")
 
 
 

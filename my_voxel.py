@@ -641,8 +641,16 @@ tree_99.voxelize_tree(voxel_size=0.1)
 tree_98.measure_tree_symmetry(z_step=1)
 tree_99.measure_tree_symmetry(z_step=1)
 
-tree_98.restore_symmetry(neighbor_trees=[tree_99], z_step=1.0, symmetry_threshold=0.9, voxel_size=0.1)
-tree_99.restore_symmetry(neighbor_trees=[tree_98], z_step=1.0, symmetry_threshold=0.9, voxel_size=0.1)
+print(f"До переноса: {len(tree_99.voxels)}")
+tree_99.restore_symmetry(neighbor_trees=[tree_98], z_step=1.0, voxel_size=0.1)
+print(f"После переноса: {len(tree_99.voxels)}")
+
+
+print(f"До переноса: {len(tree_98.voxels)}")
+tree_98.restore_symmetry(neighbor_trees=[tree_99], z_step=1.0, voxel_size=0.1)
+print(f"После переноса: {len(tree_98.voxels)}")
+
+
 
 if tree_98.recovered_voxels.shape[0] > 0:
     print(f"🔴 Восстановленные точки для дерева 98 (первые 10):\n", tree_98.recovered_voxels[:10])
