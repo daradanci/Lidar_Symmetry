@@ -510,6 +510,30 @@ class PCD_TREE(PCD):
         self.voxels = None  # Хранение вокселизированных точек
 
 
+    def compute_layer_center(self, z):
+        """
+        Вычисляет центр слоя по Z, интерполируя между основанием ствола и макушкой.
+
+        :param z: Высота слоя.
+        :return: Координаты центра слоя (X, Y).
+        """
+        if self.trunk_x is None or self.trunk_y is None or self.tree_top is None:
+            print("⚠ Ошибка: Точка макушки или ствола не найдена.")
+            return None
+
+        # Интерполяция X, Y координат по Z
+        z_bottom = np.min(self.get_active_points()[:, 2])
+        z_top = self.tree_top[2]
+
+        # Нормализуем уровень слоя в диапазоне [0,1]
+        t = (z - z_bottom) / (z_top - z_bottom)
+
+        # Линейная интерполяция между нижней и верхней точками
+        x_center = (1 - t) * self.trunk_x + t * self.tree_top[0]
+        y_center = (1 - t) * self.trunk_y + t * self.tree_top[1]
+
+        return x_center, y_center
+
     def get_active_points(self):
         """
         Возвращает активное представление точек дерева — либо воксели, либо исходные точки.
@@ -727,11 +751,10 @@ class PCD_TREE(PCD):
 
 
 
-
     def restore_symmetry(self, neighbor_trees=None, z_step=1.0, voxel_size=0.1, balance_factor=0.5, aggressive_radius=0.3, symmetry_threshold=0.9):
         """
         Улучшенный алгоритм восстановления симметрии и балансировки точек между деревьями.
-
+        
         :param neighbor_trees: список соседних деревьев
         :param z_step: шаг по высоте
         :param voxel_size: размер вокселя
@@ -743,14 +766,13 @@ class PCD_TREE(PCD):
             print("🔄 Вокселизация перед переносом...")
             self.voxelize_tree(voxel_size=voxel_size)
 
-        if self.trunk_x is None or self.trunk_y is None:
-            print("⚠ Ошибка: Не заданы координаты ствола (trunk_x, trunk_y).")
+        if self.tree_top is None:
+            print("⚠ Ошибка: Точка макушки дерева не найдена.")
             return
 
         if not hasattr(self, "recovered_voxels"):
             self.recovered_voxels = np.empty((0, 4))
 
-        # 🛠 Проверяем, есть ли у self.voxels 4-й столбец (метки)
         if self.voxels.shape[1] == 3:
             self.voxels = np.column_stack((self.voxels, np.zeros(self.voxels.shape[0])))
 
@@ -766,97 +788,45 @@ class PCD_TREE(PCD):
             if not hasattr(neighbor, "recovered_voxels"):
                 neighbor.recovered_voxels = np.empty((0, 4))
 
-            removed_from_self = []
-            added_to_neighbor = []
             generated_points = []
 
             for i, z in enumerate(z_levels):
+                center_x, center_y = self.compute_layer_center(z)
+                if center_x is None or center_y is None:
+                    continue
+                
                 idx = np.where((self.voxels[:, 2] >= z) & (self.voxels[:, 2] < z + z_step))
                 layer_voxels = self.voxels[idx]
 
                 if layer_voxels.shape[0] == 0:
                     continue
 
-                # KDTree для поиска соседей
-                self_tree = KDTree(self.voxels[:, :2])
-                neighbor_tree = KDTree(neighbor.voxels[:, :2])
-
-                # Проверяем симметрию слоя
                 symmetry_factor = self.symmetry_scores_per_layer[i] if i < len(self.symmetry_scores_per_layer) else 1.0
                 print(f"📊 Симметрия слоя {i} (z={z:.2f} м): {symmetry_factor:.2f}")
 
                 if symmetry_factor < symmetry_threshold:
                     recovery_strength = 1 - symmetry_factor
-                    left_half = layer_voxels[layer_voxels[:, 0] < self.trunk_x]
-                    right_half = layer_voxels[layer_voxels[:, 0] > self.trunk_x]
+                    left_half = layer_voxels[layer_voxels[:, 0] < center_x]
+                    right_half = layer_voxels[layer_voxels[:, 0] > center_x]
 
-                    # Восстановление симметрии (генерация точек)
                     for voxel in left_half:
-                        # Зеркальное отражение по X
-                        mirror_voxel_x = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2], 2])
-                        # Зеркальное отражение по Y
-                        mirror_voxel_y = np.array([voxel[0], 2 * self.trunk_y - voxel[1], voxel[2], 2])
-                        # Зеркальное отражение по XY
-                        mirror_voxel_xy = np.array([2 * self.trunk_x - voxel[0], 2 * self.trunk_y - voxel[1], voxel[2], 2])
-
-                        # Добавляем случайный шум по Z для плавности
-                        for mv in [mirror_voxel_x, mirror_voxel_y, mirror_voxel_xy]:
-                            mv[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
-                            if np.random.rand() < recovery_strength:
-                                generated_points.append(mv)
+                        mirror_voxel = np.array([2 * center_x - voxel[0], voxel[1], voxel[2], 2])
+                        mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
+                        if np.random.rand() < recovery_strength:
+                            generated_points.append(mirror_voxel)
 
                     for voxel in right_half:
-                        mirror_voxel_x = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2], 2])
-                        mirror_voxel_y = np.array([voxel[0], 2 * self.trunk_y - voxel[1], voxel[2], 2])
-                        mirror_voxel_xy = np.array([2 * self.trunk_x - voxel[0], 2 * self.trunk_y - voxel[1], voxel[2], 2])
+                        mirror_voxel = np.array([2 * center_x - voxel[0], voxel[1], voxel[2], 2])
+                        mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
+                        if np.random.rand() < recovery_strength:
+                            generated_points.append(mirror_voxel)
 
-                        for mv in [mirror_voxel_x, mirror_voxel_y, mirror_voxel_xy]:
-                            mv[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
-                            if np.random.rand() < recovery_strength:
-                                generated_points.append(mv)
-
-
-                # Балансировка точек между деревьями
-                for voxel in layer_voxels:
-                    dist_self = np.linalg.norm(voxel[:2] - np.array([self.trunk_x, self.trunk_y]))
-                    dist_neighbor = np.linalg.norm(voxel[:2] - np.array([neighbor.trunk_x, neighbor.trunk_y]))
-
-                    self_neighbors = len(self_tree.query_ball_point(voxel[:2], voxel_size))
-                    neighbor_neighbors = len(neighbor_tree.query_ball_point(voxel[:2], voxel_size))
-
-                    if abs(dist_self - dist_neighbor) < aggressive_radius or (neighbor_neighbors > self_neighbors * (1 + balance_factor)):
-                        removed_from_self.append(voxel[:3])
-                        added_to_neighbor.append(np.append(voxel[:3], 1))  # Метка 1
-
-            # Удаление точек у текущего дерева
-            if removed_from_self:
-                removed_from_self = np.array(removed_from_self)
-                self.voxels = np.array([
-                    v for v in self.voxels if not np.any(np.all(np.isclose(v[:3], removed_from_self, atol=voxel_size), axis=1))
-                ])
-                removed_from_self = np.column_stack((removed_from_self, np.zeros(removed_from_self.shape[0])))
-                self.recovered_voxels = np.vstack([self.recovered_voxels, removed_from_self]) if self.recovered_voxels.size else removed_from_self
-
-            # Добавление точек соседнему дереву
-            if added_to_neighbor:
-                added_to_neighbor = np.array(added_to_neighbor)
-                if neighbor.voxels.shape[1] == 3:
-                    neighbor.voxels = np.column_stack((neighbor.voxels, np.zeros(neighbor.voxels.shape[0])))
-                neighbor.voxels = np.vstack([neighbor.voxels, added_to_neighbor])
-                neighbor.recovered_voxels = np.vstack([neighbor.recovered_voxels, added_to_neighbor]) if neighbor.recovered_voxels.size else added_to_neighbor
-
-            # Добавление сгенерированных симметричных точек
             if generated_points:
                 generated_points = np.array(generated_points)
                 self.voxels = np.vstack([self.voxels, generated_points])
                 self.recovered_voxels = np.vstack([self.recovered_voxels, generated_points]) if self.recovered_voxels.size else generated_points
 
-            print(f"🔄 Перенос из {self.file_path} → {neighbor.file_path}: {len(removed_from_self)} точек.")
-            print(f"➕ Сгенерировано {len(generated_points)} симметричных точек.")
-
         print(f"✅ Завершено восстановление симметрии и балансировка точек.")
-
-
 
 
 from sklearn.cluster import DBSCAN
