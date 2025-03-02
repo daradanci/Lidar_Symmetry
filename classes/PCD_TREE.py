@@ -6,6 +6,7 @@ from sklearn.cluster import DBSCAN
 from time import time
 from scipy.spatial.distance import cdist
 from scipy.spatial.distance import euclidean
+from scipy.spatial import KDTree
 
 from tqdm import tqdm
 import pyvista
@@ -629,16 +630,20 @@ class PCD_TREE(PCD):
 
 
 
-    def restore_symmetry(self, neighbor_trees=None, z_step=1.0, voxel_size=0.1):
-        """
-        Переносит чужие точки обратно в соседние деревья.
 
-        :param neighbor_trees: Список соседних деревьев.
-        :param z_step: Высота слоя
-        :param voxel_size: Размер вокселя для поиска соседних точек
+    def restore_symmetry(self, neighbor_trees=None, z_step=1.0, voxel_size=0.1, balance_factor=0.5, aggressive_radius=0.3, symmetry_threshold=0.9):
+        """
+        Улучшенный алгоритм восстановления симметрии и балансировки точек между деревьями.
+
+        :param neighbor_trees: список соседних деревьев
+        :param z_step: шаг по высоте
+        :param voxel_size: размер вокселя
+        :param balance_factor: уровень балансировки (0.5 = 50% точек передаём, если плотность выше)
+        :param aggressive_radius: радиус агрессивной передачи точек
+        :param symmetry_threshold: порог симметрии (если выше, не восстанавливаем)
         """
         if self.voxels is None:
-            print("🔄 Вокселизация перед восстановлением...")
+            print("🔄 Вокселизация перед переносом...")
             self.voxelize_tree(voxel_size=voxel_size)
 
         if self.trunk_x is None or self.trunk_y is None:
@@ -646,12 +651,16 @@ class PCD_TREE(PCD):
             return
 
         if not hasattr(self, "recovered_voxels"):
-            self.recovered_voxels = np.empty((0, 4))  
+            self.recovered_voxels = np.empty((0, 4))
+
+        # 🛠 Проверяем, есть ли у self.voxels 4-й столбец (метки)
+        if self.voxels.shape[1] == 3:
+            self.voxels = np.column_stack((self.voxels, np.zeros(self.voxels.shape[0])))
 
         z_min, z_max = np.min(self.voxels[:, 2]), np.max(self.voxels[:, 2])
         z_levels = np.arange(z_min, z_max, z_step)
 
-        print(f"🛠 Перенос точек между деревьями ({len(z_levels)} слоев)...")
+        print(f"🛠 Балансировка точек между деревьями ({len(z_levels)} слоев)...")
 
         for neighbor in neighbor_trees:
             if neighbor.voxels is None or neighbor.voxels.shape[0] == 0:
@@ -662,6 +671,7 @@ class PCD_TREE(PCD):
 
             removed_from_self = []
             added_to_neighbor = []
+            generated_points = []
 
             for i, z in enumerate(z_levels):
                 idx = np.where((self.voxels[:, 2] >= z) & (self.voxels[:, 2] < z + z_step))
@@ -670,39 +680,75 @@ class PCD_TREE(PCD):
                 if layer_voxels.shape[0] == 0:
                     continue
 
+                # KDTree для поиска соседей
+                self_tree = KDTree(self.voxels[:, :2])
+                neighbor_tree = KDTree(neighbor.voxels[:, :2])
+
+                # Проверяем симметрию слоя
+                symmetry_factor = self.symmetry_scores_per_layer[i] if i < len(self.symmetry_scores_per_layer) else 1.0
+                print(f"📊 Симметрия слоя {i} (z={z:.2f} м): {symmetry_factor:.2f}")
+
+                if symmetry_factor < symmetry_threshold:
+                    recovery_strength = 1 - symmetry_factor
+                    left_half = layer_voxels[layer_voxels[:, 0] < self.trunk_x]
+                    right_half = layer_voxels[layer_voxels[:, 0] > self.trunk_x]
+
+                    # Восстановление симметрии (генерация точек)
+                    for voxel in left_half:
+                        mirror_voxel = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2], 2])  # Метка 2
+
+                        if not np.any(np.all(np.isclose(mirror_voxel[:3], right_half[:, :3], atol=voxel_size), axis=1)):
+                            mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
+                            if np.random.rand() < recovery_strength:
+                                generated_points.append(mirror_voxel)
+
+                    for voxel in right_half:
+                        mirror_voxel = np.array([2 * self.trunk_x - voxel[0], voxel[1], voxel[2], 2])  # Метка 2
+
+                        if not np.any(np.all(np.isclose(mirror_voxel[:3], left_half[:, :3], atol=voxel_size), axis=1)):
+                            mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
+                            if np.random.rand() < recovery_strength:
+                                generated_points.append(mirror_voxel)
+
+                # Балансировка точек между деревьями
                 for voxel in layer_voxels:
                     dist_self = np.linalg.norm(voxel[:2] - np.array([self.trunk_x, self.trunk_y]))
                     dist_neighbor = np.linalg.norm(voxel[:2] - np.array([neighbor.trunk_x, neighbor.trunk_y]))
 
-                    if dist_neighbor < dist_self:  # Если точка ближе к соседу
-                        removed_from_self.append(voxel[:3])  # Оставляем только XYZ
-                        added_to_neighbor.append(np.append(voxel[:3], 1))  # Добавляем метку
+                    self_neighbors = len(self_tree.query_ball_point(voxel[:2], voxel_size))
+                    neighbor_neighbors = len(neighbor_tree.query_ball_point(voxel[:2], voxel_size))
 
-            # Удаляем точки у текущего дерева (оставляем только XYZ для сравнения)
+                    if abs(dist_self - dist_neighbor) < aggressive_radius or (neighbor_neighbors > self_neighbors * (1 + balance_factor)):
+                        removed_from_self.append(voxel[:3])
+                        added_to_neighbor.append(np.append(voxel[:3], 1))  # Метка 1
+
+            # Удаление точек у текущего дерева
             if removed_from_self:
-                removed_from_self = np.array(removed_from_self)  # Преобразуем в numpy-массив
+                removed_from_self = np.array(removed_from_self)
                 self.voxels = np.array([
                     v for v in self.voxels if not np.any(np.all(np.isclose(v[:3], removed_from_self, atol=voxel_size), axis=1))
                 ])
-
-                # 🛠 **Исправлено:** Дополняем `removed_from_self` четвёртым столбцом (0 = точка удалена)
                 removed_from_self = np.column_stack((removed_from_self, np.zeros(removed_from_self.shape[0])))
-
                 self.recovered_voxels = np.vstack([self.recovered_voxels, removed_from_self]) if self.recovered_voxels.size else removed_from_self
 
-            # Приводим формат `neighbor.voxels` к 4 столбцам, если нужно
-            if neighbor.voxels.shape[1] == 3:
-                neighbor.voxels = np.column_stack((neighbor.voxels, np.zeros(neighbor.voxels.shape[0])))
-
-            # Добавляем точки соседу
+            # Добавление точек соседнему дереву
             if added_to_neighbor:
                 added_to_neighbor = np.array(added_to_neighbor)
+                if neighbor.voxels.shape[1] == 3:
+                    neighbor.voxels = np.column_stack((neighbor.voxels, np.zeros(neighbor.voxels.shape[0])))
                 neighbor.voxels = np.vstack([neighbor.voxels, added_to_neighbor])
                 neighbor.recovered_voxels = np.vstack([neighbor.recovered_voxels, added_to_neighbor]) if neighbor.recovered_voxels.size else added_to_neighbor
 
-            print(f"🔄 Перенос из {self.file_path} → {neighbor.file_path}: {len(removed_from_self)} точек.")
+            # Добавление сгенерированных симметричных точек
+            if generated_points:
+                generated_points = np.array(generated_points)
+                self.voxels = np.vstack([self.voxels, generated_points])
+                self.recovered_voxels = np.vstack([self.recovered_voxels, generated_points]) if self.recovered_voxels.size else generated_points
 
-        print(f"✅ Завершён перенос точек между деревьями.")
+            print(f"🔄 Перенос из {self.file_path} → {neighbor.file_path}: {len(removed_from_self)} точек.")
+            print(f"➕ Сгенерировано {len(generated_points)} симметричных точек.")
+
+        print(f"✅ Завершено восстановление симметрии и балансировка точек.")
 
 
 
@@ -747,3 +793,31 @@ def find_trunk_center(points, z_threshold=0.1, min_points=10, eps=0.05, min_samp
     trunk_x, trunk_y = np.mean(core_points[:, :2], axis=0)
     print(f"✅ Центр ствола найден: X = {trunk_x:.2f}, Y = {trunk_y:.2f}")
     return trunk_x, trunk_y
+
+
+# from scipy.spatial import KDTree
+
+# def get_local_density(points, radius=0.5):
+#     """Возвращает массив плотностей точек."""
+#     if len(points) == 0:
+#         return np.zeros(0)
+#     tree = KDTree(points[:, :2])
+#     densities = np.array([len(tree.query_ball_point(p[:2], radius)) for p in points])
+#     return densities
+
+# def should_transfer(dist_self, dist_neighbor, voxel_size):
+#     """Решает, стоит ли передавать точку (если она на границе деревьев)."""
+#     diff = abs(dist_self - dist_neighbor)
+#     if diff < voxel_size * 1.5:  # Пограничная зона
+#         return np.random.rand() < 0.7  # С вероятностью 70% передаем
+#     return dist_neighbor < dist_self  # Если сосед явно ближе
+
+# def check_neighborhood(tree, point, neighbor_tree, radius=0.3):
+#     """Проверяет, окружена ли точка точками своего или соседнего дерева."""
+#     tree_kdtree = KDTree(tree.voxels[:, :2])
+#     neighbor_kdtree = KDTree(neighbor_tree.voxels[:, :2])
+
+#     tree_neighbors = len(tree_kdtree.query_ball_point(point[:2], radius))
+#     neighbor_neighbors = len(neighbor_kdtree.query_ball_point(point[:2], radius))
+
+#     return tree_neighbors >= neighbor_neighbors  # Если у своего дерева больше соседей, оставляем точку

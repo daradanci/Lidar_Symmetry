@@ -495,69 +495,77 @@ def process_trees_in_range(
 
 
 
+
 def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_step=1.0):
     """
     Визуализирует дерево (PCD_TREE) в интерактивном окне Open3D.
-    Отображает окраску по слоям, центр ствола, поддерживает вокселизацию.
-    Восстановленные точки отображаются красным цветом.
+    Восстановленные точки (метка 1) отображаются с красным градиентом.
+    Сгенерированные точки (метка 2) отображаются с синим градиентом.
 
     :param tree: объект PCD_TREE
     :param point_size: размер точек
-    :param transform: метод трансформации перед визуализацией ("xy_to_xz", "xy_to_yz", "flip_xy", "flip_xz", "flip_yz")
+    :param transform: метод трансформации перед визуализацией
     :param z_step: Высота слоя для окрашивания
     """
-    # Получаем активное представление точек (воксели или обычные точки)
     points = tree.get_active_points()
 
-    # Проверка наличия точек
     if points is None or points.shape[0] == 0:
         print("⚠ Ошибка: У дерева нет точек для визуализации.")
         return
 
-    # Проверка наличия координат ствола
     if tree.trunk_x is None or tree.trunk_y is None:
         print("⚠ Ошибка: Не заданы координаты ствола для визуализации.")
         return
 
-    # Если есть восстановленные точки, используем 4-ю координату (метку)
-    if points.shape[1] == 4:
-        recovered_mask = points[:, 3] == 1  # Фильтр восстановленных точек
-        points = points[:, :3]  # Оставляем только XYZ
+    # Определяем маски для разных типов точек
+    recovered_mask = (points[:, 3] == 1) if points.shape[1] == 4 else np.zeros(points.shape[0], dtype=bool)
+    generated_mask = (points[:, 3] == 2) if points.shape[1] == 4 else np.zeros(points.shape[0], dtype=bool)
+    points = points[:, :3]  # Используем только XYZ
 
-    # Создание облака точек
     pcd = o3d.geometry.PointCloud()
 
-    # Разделение дерева на слои по высоте
     z_min, z_max = np.min(points[:, 2]), np.max(points[:, 2])
     z_levels = np.arange(z_min, z_max, z_step)
     trunk_x, trunk_y = tree.trunk_x, tree.trunk_y
 
-    # Две чередующиеся палитры
     colormap_pair = ["plasma", "viridis"]
-
-    # Создание массива цветов
     colors = np.zeros((points.shape[0], 3))
 
-    # Назначение цвета каждому слою
+    # Окрашивание слоев
     for i, z in enumerate(z_levels):
         idx = np.where((points[:, 2] >= z) & (points[:, 2] < z + z_step))
         if len(idx[0]) == 0:
             continue
 
-        # Расстояния от ствола до точек слоя
         distances = np.linalg.norm(points[idx][:, :2] - np.array([trunk_x, trunk_y]), axis=1)
         norm_distances = (distances - np.min(distances)) / (np.max(distances) - np.min(distances) + 1e-6)
 
-        # Чередование цветовой палитры
         colormap = cm.get_cmap(colormap_pair[i % 2])
         colors[idx] = colormap(norm_distances)[:, :3]
 
-    # Если есть восстановленные точки — делаем их красными 🔥
-    if "recovered_mask" in locals():
-        colors[recovered_mask] = [1, 0, 0]  # Красный цвет
+    # 🔴 Красный градиент для восстановленных точек (чем ближе к стволу, тем темнее)
+    if np.any(recovered_mask):
+        recovered_points = points[recovered_mask]
+        recovered_distances = np.linalg.norm(recovered_points[:, :2] - np.array([trunk_x, trunk_y]), axis=1)
+        min_d, max_d = np.min(recovered_distances), np.max(recovered_distances) + 1e-6
+        norm_recovered_distances = (recovered_distances - min_d) / (max_d - min_d)
 
-    # Применение трансформации координат
+        red_gradient = np.column_stack((0.3 + norm_recovered_distances * 0.7, np.zeros_like(norm_recovered_distances), np.zeros_like(norm_recovered_distances)))
+        colors[recovered_mask] = red_gradient
+
+    # 🔵 Синий градиент для сгенерированных точек (чем ближе к стволу, тем темнее)
+    if np.any(generated_mask):
+        generated_points = points[generated_mask]
+        generated_distances = np.linalg.norm(generated_points[:, :2] - np.array([trunk_x, trunk_y]), axis=1)
+        min_d, max_d = np.min(generated_distances), np.max(generated_distances) + 1e-6
+        norm_generated_distances = (generated_distances - min_d) / (max_d - min_d)
+
+        blue_gradient = np.column_stack((np.zeros_like(norm_generated_distances), np.zeros_like(norm_generated_distances), 0.3 + norm_generated_distances * 0.7))
+        colors[generated_mask] = blue_gradient
+
+    # Центр ствола
     trunk_center = np.array([[trunk_x, trunk_y, np.min(points[:, 2])]])
+    
     if transform == "xy_to_xz":
         points = points[:, [0, 2, 1]]
         trunk_center = trunk_center[:, [0, 2, 1]]
@@ -574,29 +582,23 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
         points[:, [1, 2]] *= -1
         trunk_center[:, [1, 2]] *= -1
 
-    # Обновление точек и цветов
     pcd.points = o3d.utility.Vector3dVector(points)
     pcd.colors = o3d.utility.Vector3dVector(colors)
 
-    # Создание визуализатора
     vis = o3d.visualization.Visualizer()
     vis.create_window()
-
-    # Добавление точек дерева
     vis.add_geometry(pcd)
 
-    # ✅ Отображение центра ствола (красная точка)
+    # Добавление точки центра ствола (красная)
     trunk_pcd = o3d.geometry.PointCloud()
     trunk_pcd.points = o3d.utility.Vector3dVector(trunk_center)
-    trunk_pcd.colors = o3d.utility.Vector3dVector([[1, 0, 0]])  # Красный цвет
+    trunk_pcd.colors = o3d.utility.Vector3dVector([[1, 0, 0]])
     vis.add_geometry(trunk_pcd)
 
-    # Настройка визуализации
     render_opt = vis.get_render_option()
-    render_opt.background_color = np.array([0, 0, 0])  # Черный фон
+    render_opt.background_color = np.array([0, 0, 0])
     render_opt.point_size = point_size
 
-    # Настройка камеры
     center = np.mean(points, axis=0)
     view_control = vis.get_view_control()
     view_control.set_lookat(center.tolist())
@@ -604,11 +606,8 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
     view_control.set_up([0, 1, 0])
     view_control.set_zoom(0.8)
 
-    # Запуск визуализации
     vis.run()
     vis.destroy_window()
-
-
 
 # tree = PCD_TREE()  # Создаём объект дерева
 # tree.open("D:/data/symmetry/tree_0099.pcd")  # Загружаем точки из файла
