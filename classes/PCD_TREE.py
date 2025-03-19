@@ -14,6 +14,7 @@ import random
 import open3d as o3d
 import seaborn as sns
 import matplotlib.pyplot as plt
+from matplotlib.path import Path
 import math
 import circle_fit as cf
 import statistics
@@ -542,7 +543,7 @@ class PCD_TREE(PCD):
 
     def voxelize_tree(self, voxel_size=0.1):
         """
-        Применяет вокселизацию к облаку точек дерева.
+        Применяет вокселизацию с построением регулярной сетки вокселей.
 
         :param voxel_size: Размер вокселя.
         """
@@ -552,9 +553,23 @@ class PCD_TREE(PCD):
 
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(self.points)
-        voxel_grid = pcd.voxel_down_sample(voxel_size=voxel_size)
-        self.voxels = np.asarray(voxel_grid.points)
-        print(f"✅ Вокселизация завершена: {self.voxels.shape[0]} вокселей.")
+
+        # Построение воксельной сетки
+        voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=voxel_size)
+
+        voxels = voxel_grid.get_voxels()
+
+        voxel_centers = []
+        origin = np.array(voxel_grid.origin)
+
+        for voxel in voxels:
+            grid_index = np.array(voxel.grid_index, dtype=float)
+            center = origin + (grid_index + 0.5) * voxel_size  # Центр каждой ячейки
+            voxel_centers.append(center)
+
+        self.voxels = np.array(voxel_centers)
+        print(f"✅ Вокселизация завершена: {self.voxels.shape[0]} вокселей в сетке.")
+
 
     def cluster_tree(self, eps=0.1, min_samples=5, remove_noise=True):
         """
@@ -747,27 +762,30 @@ class PCD_TREE(PCD):
             self.symmetry_scores_per_layer.append(layer_symmetry)
 
         self.symmetry_score = np.mean(self.symmetry_scores_per_layer) if self.symmetry_scores_per_layer else 0
+
+        print(f"Общий коэффициент симметрии дерева: {self.symmetry_score:.3f}")
+
         return self.symmetry_score
 
-
-
-    def restore_symmetry(self, neighbor_trees=None, z_step=1.0, voxel_size=0.1, balance_factor=0.5, aggressive_radius=0.3, symmetry_threshold=0.9):
+    def restore_symmetry(self, neighbor_trees=None, z_step=1.0, voxel_size=0.1, balance_factor=0.8,
+                        aggressive_radius=0.5, symmetry_threshold=0.9, generate_mirrored=True):
         """
-        Улучшенный алгоритм восстановления симметрии и балансировки точек между деревьями.
-        
+        Восстановление симметрии и приближение многоугольников слоёв к идеальной форме с помощью балансировки точек.
+
         :param neighbor_trees: список соседних деревьев
         :param z_step: шаг по высоте
         :param voxel_size: размер вокселя
-        :param balance_factor: уровень балансировки (0.5 = 50% точек передаём, если плотность выше)
-        :param aggressive_radius: радиус агрессивной передачи точек
-        :param symmetry_threshold: порог симметрии (если выше, не восстанавливаем)
+        :param balance_factor: доля точек для передачи при балансировке
+        :param aggressive_radius: радиус для отбора точек у соседа
+        :param symmetry_threshold: порог симметрии (если выше, зеркалирование не выполняется)
+        :param generate_mirrored: выполнять ли зеркальное восстановление точек
         """
         if self.voxels is None:
-            print("🔄 Вокселизация перед переносом...")
+            print("🔄 Вокселизация перед восстановлением...")
             self.voxelize_tree(voxel_size=voxel_size)
 
         if self.tree_top is None:
-            print("⚠ Ошибка: Точка макушки дерева не найдена.")
+            print("⚠ Ошибка: Макушка дерева не найдена.")
             return
 
         if not hasattr(self, "recovered_voxels"):
@@ -779,55 +797,172 @@ class PCD_TREE(PCD):
         z_min, z_max = np.min(self.voxels[:, 2]), np.max(self.voxels[:, 2])
         z_levels = np.arange(z_min, z_max, z_step)
 
-        print(f"🛠 Балансировка точек между деревьями ({len(z_levels)} слоев)...")
+        print(f"🛠 Восстановление симметрии ({len(z_levels)} слоев)...")
 
-        for neighbor in neighbor_trees:
-            if neighbor.voxels is None or neighbor.voxels.shape[0] == 0:
+        generated_points = []
+
+        for i, z in enumerate(z_levels):
+            center_x, center_y = self.compute_layer_center(z)
+            if center_x is None or center_y is None:
                 continue
 
-            if not hasattr(neighbor, "recovered_voxels"):
-                neighbor.recovered_voxels = np.empty((0, 4))
+            layer_voxels = self.voxels[(self.voxels[:, 2] >= z) & (self.voxels[:, 2] < z + z_step)]
 
-            generated_points = []
+            if layer_voxels.shape[0] == 0:
+                continue
 
-            for i, z in enumerate(z_levels):
-                center_x, center_y = self.compute_layer_center(z)
-                if center_x is None or center_y is None:
-                    continue
-                
-                idx = np.where((self.voxels[:, 2] >= z) & (self.voxels[:, 2] < z + z_step))
-                layer_voxels = self.voxels[idx]
+            symmetry_factor = self.symmetry_scores_per_layer[i] if i < len(self.symmetry_scores_per_layer) else 1.0
+            print(f"📊 Симметрия слоя {i} (z={z:.2f} м): {symmetry_factor:.2f}")
 
-                if layer_voxels.shape[0] == 0:
-                    continue
+            if generate_mirrored and symmetry_factor < symmetry_threshold:
+                recovery_strength = 1 - symmetry_factor
+                left_half = layer_voxels[layer_voxels[:, 0] < center_x]
+                right_half = layer_voxels[layer_voxels[:, 0] > center_x]
 
-                symmetry_factor = self.symmetry_scores_per_layer[i] if i < len(self.symmetry_scores_per_layer) else 1.0
-                print(f"📊 Симметрия слоя {i} (z={z:.2f} м): {symmetry_factor:.2f}")
+                for voxel in left_half:
+                    mirror_voxel = np.array([2 * center_x - voxel[0], voxel[1], voxel[2], 2])
+                    mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
+                    if np.random.rand() < recovery_strength:
+                        generated_points.append(mirror_voxel)
 
-                if symmetry_factor < symmetry_threshold:
-                    recovery_strength = 1 - symmetry_factor
-                    left_half = layer_voxels[layer_voxels[:, 0] < center_x]
-                    right_half = layer_voxels[layer_voxels[:, 0] > center_x]
+                for voxel in right_half:
+                    mirror_voxel = np.array([2 * center_x - voxel[0], voxel[1], voxel[2], 2])
+                    mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
+                    if np.random.rand() < recovery_strength:
+                        generated_points.append(mirror_voxel)
 
-                    for voxel in left_half:
-                        mirror_voxel = np.array([2 * center_x - voxel[0], voxel[1], voxel[2], 2])
-                        mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
-                        if np.random.rand() < recovery_strength:
-                            generated_points.append(mirror_voxel)
+        if generated_points:
+            generated_points = np.array(generated_points)
+            self.voxels = np.vstack([self.voxels, generated_points])
+            self.recovered_voxels = np.vstack([self.recovered_voxels, generated_points]) if self.recovered_voxels.size else generated_points
 
-                    for voxel in right_half:
-                        mirror_voxel = np.array([2 * center_x - voxel[0], voxel[1], voxel[2], 2])
-                        mirror_voxel[2] += np.random.uniform(-voxel_size / 2, voxel_size / 2)
-                        if np.random.rand() < recovery_strength:
-                            generated_points.append(mirror_voxel)
+        # 🌀 Балансировка точек с учётом многоугольников и радиуса
+        if neighbor_trees:
+            for neighbor in neighbor_trees:
+                for z in z_levels:
+                    self.balance_layer_with_neighbor(
+                        neighbor, z, z_step=z_step, balance_factor=balance_factor
+                    )
 
-            if generated_points:
-                generated_points = np.array(generated_points)
-                self.voxels = np.vstack([self.voxels, generated_points])
-                self.recovered_voxels = np.vstack([self.recovered_voxels, generated_points]) if self.recovered_voxels.size else generated_points
 
-        print(f"✅ Завершено восстановление симметрии и балансировка точек.")
+        # Перестроение многоугольников для оценки результата
+        print("🔄 Перестроение многоугольников после балансировки...")
+        self.generate_all_layer_polygons(z_step=z_step, voxel_size=voxel_size)
+        print("✅ Многоугольники обновлены.")
 
+        print(f"✅ Завершено восстановление симметрии и балансировка.")
+
+
+
+    def balance_layer_with_neighbor(self, neighbor, z, z_step=1.0, balance_factor=0.5):
+        """
+        Балансировка точек слоя: разнос точек между деревьями по принципу расстояния до центра.
+
+        :param neighbor: соседнее дерево
+        :param z: высота слоя
+        :param z_step: толщина слоя
+        :param balance_factor: доля точек для передачи при переизбытке
+        """
+        # Точки текущего и соседнего дерева в слое
+        own_voxels = self.voxels[(self.voxels[:, 2] >= z) & (self.voxels[:, 2] < z + z_step)]
+        neighbor_voxels = neighbor.voxels[(neighbor.voxels[:, 2] >= z) & (neighbor.voxels[:, 2] < z + z_step)]
+
+        if own_voxels.shape[0] == 0 and neighbor_voxels.shape[0] == 0:
+            return
+
+        own_center = np.array(self.compute_layer_center(z))
+        neighbor_center = np.array(neighbor.compute_layer_center(z))
+
+        # 🔁 Возвращение чужих точек соседу
+        own_dists_to_self = np.linalg.norm(own_voxels[:, :2] - own_center, axis=1)
+        own_dists_to_neighbor = np.linalg.norm(own_voxels[:, :2] - neighbor_center, axis=1)
+
+        return_mask = own_dists_to_neighbor < own_dists_to_self
+        points_to_return = own_voxels[return_mask]
+
+        if points_to_return.shape[0] > 0:
+            # Убедимся, что points_to_return 4D
+            if points_to_return.shape[1] == 3:
+                points_to_return = np.column_stack([points_to_return, np.ones(points_to_return.shape[0])])  # метка 1
+            else:
+                points_to_return[:, 3] = 1  # метка восстановленных
+
+            # Удаление точек из self.voxels
+            mask = np.ones(self.voxels.shape[0], dtype=bool)
+            for pt in points_to_return[:, :3]:
+                match = np.all(self.voxels[:, :3] == pt, axis=1)
+                idx = np.where(match)[0]
+                if idx.size > 0:
+                    mask[idx[0]] = False
+            self.voxels = self.voxels[mask]
+
+            # Убедимся, что у соседа тоже 4D
+            if neighbor.voxels.shape[1] == 3:
+                neighbor.voxels = np.column_stack([neighbor.voxels, np.zeros(neighbor.voxels.shape[0])])
+
+            neighbor.voxels = np.vstack([neighbor.voxels, points_to_return])
+            print(f"🔁 Возвращено {points_to_return.shape[0]} точек соседу на слое z={z:.2f}")
+
+        # 🌱 Забираем свои точки у соседа
+        neighbor_dists_to_self = np.linalg.norm(neighbor_voxels[:, :2] - own_center, axis=1)
+        neighbor_dists_to_neighbor = np.linalg.norm(neighbor_voxels[:, :2] - neighbor_center, axis=1)
+
+        take_mask = neighbor_dists_to_self < neighbor_dists_to_neighbor
+        points_to_take = neighbor_voxels[take_mask]
+
+        if points_to_take.shape[0] > 0:
+            # Убедимся, что points_to_take 4D
+            if points_to_take.shape[1] == 3:
+                points_to_take = np.column_stack([points_to_take, np.ones(points_to_take.shape[0])])  # метка 1
+            else:
+                points_to_take[:, 3] = 1
+
+            # Удаление точек из neighbor.voxels
+            mask = np.ones(neighbor.voxels.shape[0], dtype=bool)
+            for pt in points_to_take[:, :3]:
+                match = np.all(neighbor.voxels[:, :3] == pt, axis=1)
+                idx = np.where(match)[0]
+                if idx.size > 0:
+                    mask[idx[0]] = False
+            neighbor.voxels = neighbor.voxels[mask]
+
+            # Убедимся, что self.voxels 4D
+            if self.voxels.shape[1] == 3:
+                self.voxels = np.column_stack([self.voxels, np.zeros(self.voxels.shape[0])])
+
+            self.voxels = np.vstack([self.voxels, points_to_take])
+            print(f"🌱 Забрано {points_to_take.shape[0]} точек у соседа на слое z={z:.2f}")
+
+        # 📤 Избыток у себя — передача части точек соседу
+        own_voxels = self.voxels[(self.voxels[:, 2] >= z) & (self.voxels[:, 2] < z + z_step)]
+        neighbor_voxels = neighbor.voxels[(neighbor.voxels[:, 2] >= z) & (neighbor.voxels[:, 2] < z + z_step)]
+
+        if own_voxels.shape[0] > neighbor_voxels.shape[0] * 1.5:
+            count_to_transfer = max(1, int(own_voxels.shape[0] * balance_factor))
+            indices = np.random.choice(own_voxels.shape[0], count_to_transfer, replace=False)
+            excess_points = own_voxels[indices]
+
+            # Убедимся, что excess_points 4D
+            if excess_points.shape[1] == 3:
+                excess_points = np.column_stack([excess_points, np.ones(excess_points.shape[0])])
+            else:
+                excess_points[:, 3] = 1
+
+            # Удаление из self.voxels
+            mask = np.ones(self.voxels.shape[0], dtype=bool)
+            for pt in excess_points[:, :3]:
+                match = np.all(self.voxels[:, :3] == pt, axis=1)
+                idx = np.where(match)[0]
+                if idx.size > 0:
+                    mask[idx[0]] = False
+            self.voxels = self.voxels[mask]
+
+            # Убедимся, что neighbor.voxels 4D
+            if neighbor.voxels.shape[1] == 3:
+                neighbor.voxels = np.column_stack([neighbor.voxels, np.zeros(neighbor.voxels.shape[0])])
+
+            neighbor.voxels = np.vstack([neighbor.voxels, excess_points])
+            print(f"📤 Передано {count_to_transfer} точек соседу из избытка на слое z={z:.2f}")
 
 from sklearn.cluster import DBSCAN
 

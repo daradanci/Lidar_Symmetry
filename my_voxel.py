@@ -655,15 +655,15 @@ tree_99.measure_tree_symmetry(z_step=1)
 
 
 
+print(f"До переноса: {len(tree_99.voxels)}")
+tree_99.restore_symmetry(neighbor_trees=[tree_98], z_step=1.0, voxel_size=0.1, generate_mirrored=False)
+print(f"После переноса: {len(tree_99.voxels)}")
+
+
 
 print(f"До переноса: {len(tree_98.voxels)}")
-tree_98.restore_symmetry(neighbor_trees=[tree_99], z_step=1.0, voxel_size=0.1)
+tree_98.restore_symmetry(neighbor_trees=[tree_99], z_step=1.0, voxel_size=0.1, generate_mirrored=False)
 print(f"После переноса: {len(tree_98.voxels)}")
-
-
-print(f"До переноса: {len(tree_99.voxels)}")
-tree_99.restore_symmetry(neighbor_trees=[tree_98], z_step=1.0, voxel_size=0.1)
-print(f"После переноса: {len(tree_99.voxels)}")
 
 
 if tree_98.recovered_voxels.shape[0] > 0:
@@ -677,8 +677,8 @@ else:
     print("⚠ Нет восстановленных точек для дерева 99!")
 
 
-tree_98.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
-tree_99.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
+# tree_98.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
+# tree_99.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
 
 visualize_tree_interactive(tree_98)
 visualize_tree_interactive(tree_99)
