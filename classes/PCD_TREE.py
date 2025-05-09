@@ -1,3 +1,5 @@
+import csv
+import os
 from .PCD import PCD
 from .PCD_UTILS import PCD_UTILS
 import numpy as np
@@ -547,6 +549,7 @@ class PCD_TREE(PCD):
         """
         if self.trunk_x is None or self.trunk_y is None or self.tree_top is None:
             print("⚠ Ошибка: Точка макушки или ствола не найдена.")
+            print(f'trunk_x: {self.trunk_x}, trunk_y: {self.trunk_y}, tree_top: {self.tree_top}')
             return None
 
         # Интерполяция X, Y координат по Z
@@ -645,58 +648,54 @@ class PCD_TREE(PCD):
         print(f"🌲 Макушка дерева найдена: X = {tree_top[0]:.2f}, Y = {tree_top[1]:.2f}, Z = {tree_top[2]:.2f}")
         return self.tree_top
 
-    def generate_layer_polygon(self, z, voxel_size=0.1):
+    def generate_layer_polygon(self, z, z_step=1.0, voxel_size=0.1):
         """
-        Генерирует многоугольник слоя на высоте z.
+        Генерирует многоугольник слоя на высоте z, охватывая все точки слоя.
 
-        :param z: высота слоя
-        :param voxel_size: минимальное расстояние между точками (размер вокселя)
+        :param z: нижняя граница слоя
+        :param z_step: высота слоя
+        :param voxel_size: расстояние между точками на рёбрах многоугольника
         """
-        points = self.get_active_points()
-        if points is None or points.shape[0] == 0:
-            print("⚠ Ошибка: У дерева нет точек для построения многоугольников.")
+        if self.voxels is None or self.voxels.shape[0] == 0:
+            print("⚠ У дерева нет вокселей для построения многоугольников.")
             return
 
-        idx = np.where((points[:, 2] >= z) & (points[:, 2] < z + voxel_size))
-        layer_voxels = points[idx]
+        # Отбираем все точки в заданном слое по высоте
+        layer_voxels = self.voxels[(self.voxels[:, 2] >= z) & (self.voxels[:, 2] < z + z_step)]
 
         if layer_voxels.shape[0] < 3:
-            return  # Недостаточно точек для построения многоугольника
+            return  # Недостаточно точек для построения оболочки
 
-        points_2d = layer_voxels[:, :2]  # Берём только X и Y координаты
+        points_2d = layer_voxels[:, :2]  # только X и Y координаты
         polygon_points = []
 
         try:
-            # 📌 Строим выпуклую оболочку (Convex Hull)
+            # 📌 Построение выпуклой оболочки
             hull = ConvexHull(points_2d)
             polygon = points_2d[hull.vertices]
         except:
-            # Если оболочка не строится, создаем правильный шестиугольник
+            # ❎ Если не удалось построить — fallback: правильный шестиугольник вокруг центра
             avg_radius = np.mean(np.linalg.norm(points_2d - np.array([self.trunk_x, self.trunk_y]), axis=1))
-            angles = np.linspace(0, 2 * np.pi, 7)[:-1]  # 6 направлений
+            angles = np.linspace(0, 2 * np.pi, 7)[:-1]
             polygon = np.column_stack((self.trunk_x + avg_radius * np.cos(angles),
-                                       self.trunk_y + avg_radius * np.sin(angles)))
+                                    self.trunk_y + avg_radius * np.sin(angles)))
 
-        # Добавляем вершины многоугольника (метка 3)
+        # 🔺 Добавляем вершины оболочки (метка 3)
         for point in polygon:
             polygon_points.append([point[0], point[1], z, 3])
 
-        # 🔗 Добавляем промежуточные точки на границах многоугольника
+        # 🔗 Добавляем промежуточные точки по рёбрам
         for j in range(len(polygon)):
             p1 = polygon[j]
-            p2 = polygon[(j + 1) % len(polygon)]  # Замыкаем контур
-
+            p2 = polygon[(j + 1) % len(polygon)]
             num_steps = max(1, int(np.linalg.norm(p1 - p2) / voxel_size))
             for step in range(num_steps):
-                interp_point = p1 + (p2 - p1) * (step / num_steps)
-                polygon_points.append([interp_point[0], interp_point[1], z, 3])
+                interp = p1 + (p2 - p1) * (step / num_steps)
+                polygon_points.append([interp[0], interp[1], z, 3])
 
-        # 📌 Добавляем многоугольник к облаку точек
+        # 📌 Добавление к self.voxels
         polygon_points = np.array(polygon_points)
-        if self.voxels is None:
-            self.voxels = polygon_points
-        else:
-            self.voxels = np.vstack([self.voxels, polygon_points])
+        self.voxels = np.vstack([self.voxels, polygon_points])
 
 
     def generate_all_layer_polygons(self, z_step=1.0, voxel_size=0.1):
@@ -751,7 +750,8 @@ class PCD_TREE(PCD):
     def measure_tree_symmetry(self, z_step=1.0, angle_step=1):
         """
         Оценивает симметричность дерева, используя координаты ствола для всех слоёв.
-
+        Записывает коэффициенты симметрии в CSV-файл.
+        
         :param z_step: Высота слоя (размер шага по Z).
         :param angle_step: Угол поворота для оценки симметрии.
         :return: Средний коэффициент симметрии (диапазон 0-1).
@@ -769,6 +769,7 @@ class PCD_TREE(PCD):
             slice_points = points[idx][:, :2]
 
             if slice_points.shape[0] < 10:
+                self.symmetry_scores_per_layer.append(None)
                 continue
 
             trunk_center = np.array([self.trunk_x, self.trunk_y])
@@ -777,20 +778,35 @@ class PCD_TREE(PCD):
             for angle in np.arange(-45, 46, angle_step):
                 rotation_matrix = np.array([
                     [np.cos(np.radians(angle)), -np.sin(np.radians(angle))],
-                    [np.sin(np.radians(angle)), np.cos(np.radians(angle))]
+                    [np.sin(np.radians(angle)),  np.cos(np.radians(angle))]
                 ])
                 rotated_points = (slice_points - trunk_center) @ rotation_matrix + trunk_center
                 left_half = rotated_points[:, 0] < trunk_center[0]
                 right_half = ~left_half
-                score = min(np.sum(left_half), np.sum(right_half)) / max(np.sum(left_half), np.sum(right_half))
+
+                if max(np.sum(left_half), np.sum(right_half)) == 0:
+                    score = 0
+                else:
+                    score = min(np.sum(left_half), np.sum(right_half)) / max(np.sum(left_half), np.sum(right_half))
+
                 angle_symmetry_scores.append(score)
 
             layer_symmetry = np.mean(angle_symmetry_scores)
             self.symmetry_scores_per_layer.append(layer_symmetry)
 
-        self.symmetry_score = np.mean(self.symmetry_scores_per_layer) if self.symmetry_scores_per_layer else 0
+        self.symmetry_score = np.mean([s for s in self.symmetry_scores_per_layer if s is not None]) if self.symmetry_scores_per_layer else 0
 
         print(f"Общий коэффициент симметрии дерева: {self.symmetry_score:.3f}")
+
+        # Вызов функции для записи в файл
+        try:
+            tree_id = getattr(self, "tree_id", None)
+            if tree_id is None:
+                # если ID не задан явно, пробуем извлечь из имени файла
+                tree_id = os.path.splitext(os.path.basename(self.file_path))[0].split("_")[-1]
+            write_symmetry_to_file(tree_id, self.symmetry_scores_per_layer)
+        except Exception as e:
+            print(f"⚠ Ошибка при записи симметрии в файл: {e}")
 
         return self.symmetry_score
 
@@ -840,10 +856,14 @@ class PCD_TREE(PCD):
             if layer_voxels.shape[0] == 0:
                 continue
 
-            symmetry_factor = self.symmetry_scores_per_layer[i] if i < len(self.symmetry_scores_per_layer) else 1.0
-            print(f"📊 Симметрия слоя {i} (z={z:.2f} м): {symmetry_factor:.2f}")
+            symmetry_factor = self.symmetry_scores_per_layer[i] if i < len(self.symmetry_scores_per_layer) else None
 
-            if generate_mirrored and symmetry_factor < symmetry_threshold:
+            if symmetry_factor is not None:
+                print(f"📊 Симметрия слоя {i} (z={z:.2f} м): {symmetry_factor:.2f}")
+            else:
+                print(f"📊 Симметрия слоя {i} (z={z:.2f} м): недостаточно точек")
+
+            if generate_mirrored and symmetry_factor is not None and symmetry_factor < symmetry_threshold:
                 recovery_strength = 1 - symmetry_factor
 
                 # Плавное изменение угла поворота от -theta_max до +theta_max
@@ -964,6 +984,40 @@ def find_trunk_center(points, z_threshold=0.1, min_points=10, eps=0.05, min_samp
     trunk_x, trunk_y = np.mean(core_points[:, :2], axis=0)
     print(f"✅ Центр ствола найден: X = {trunk_x:.2f}, Y = {trunk_y:.2f}")
     return trunk_x, trunk_y
+
+def write_symmetry_to_file(tree_id, symmetry_scores, output_dir="symmetry_logs"):
+    """
+    Сохраняет послойные коэффициенты симметрии в CSV-файл для дерева с данным ID.
+    Каждый вызов добавляет новую колонку в файл, без перезаписи предыдущих данных.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    filename = os.path.join(output_dir, f"symmetry_tree_{tree_id}.csv")
+
+    # Загружаем существующие строки, если файл есть
+    existing_rows = []
+    if os.path.exists(filename):
+        with open(filename, 'r', newline='') as f:
+            reader = csv.reader(f)
+            existing_rows = list(reader)
+
+    # Убедимся, что достаточно строк (по числу слоёв)
+    max_len = max(len(existing_rows), len(symmetry_scores))
+    while len(existing_rows) < max_len:
+        existing_rows.append([])
+
+    # Добавим новые значения послойно
+    for i, score in enumerate(symmetry_scores):
+        existing_rows[i].append(f"{score:.3f}" if score is not None else "")
+
+
+    # Запишем обратно в файл
+    with open(filename, 'w', newline='') as f:
+        writer = csv.writer(f)
+        print(f"📁 Запись в файл {filename}")
+        print("📏 Кол-во строк:", len(existing_rows))
+        print("🧩 Новые значения:", symmetry_scores)
+
+        writer.writerows(existing_rows)
 
 
 # from scipy.spatial import KDTree
