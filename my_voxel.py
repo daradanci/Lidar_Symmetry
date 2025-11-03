@@ -495,8 +495,7 @@ def process_trees_in_range(
 
 
 
-
-def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_step=1.0):
+def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_step=1.0, background="white"):
     """
     Визуализирует дерево (PCD_TREE) в интерактивном окне Open3D.
     Восстановленные точки (метка 1) отображаются с красным градиентом.
@@ -507,6 +506,7 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
     :param point_size: размер точек
     :param transform: метод трансформации перед визуализацией
     :param z_step: Высота слоя для окрашивания
+    :param background: Цвет фона визуализации — "black" или "white"
     """
     points = tree.get_active_points()
 
@@ -603,7 +603,7 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
     vis.add_geometry(trunk_pcd)
 
     render_opt = vis.get_render_option()
-    render_opt.background_color = np.array([0, 0, 0])
+    render_opt.background_color = np.array([1, 1, 1]) if background == "white" else np.array([0, 0, 0])
     render_opt.point_size = point_size
 
     center = np.mean(points, axis=0)
@@ -615,7 +615,6 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
 
     vis.run()
     vis.destroy_window()
-
 
 
 # tree = PCD_TREE()  # Создаём объект дерева
@@ -687,78 +686,78 @@ def visualize_tree_interactive(tree, point_size=5.0, transform="xy_to_xz", z_ste
 # tree_99.measure_tree_symmetry(z_step=1)
 
 
-tree_006 = PCD_TREE()
-tree_006.open("D:\\data\\symmetry\\tree_0006.pcd", verbose=True)
-tree_006.set_trunk_center(z_threshold=0.1, min_points=10)
-tree_006.find_tree_top()
-tree_006.file_path = "D:\\data\\symmetry\\tree_0006.pcd"
-visualize_tree_interactive(tree_006)
-tree_006.voxelize_tree(voxel_size=0.15)
+# tree_006 = PCD_TREE()
+# tree_006.open("D:\\data\\symmetry\\tree_0006.pcd", verbose=True)
+# tree_006.set_trunk_center(z_threshold=0.1, min_points=10)
+# tree_006.find_tree_top()
+# tree_006.file_path = "D:\\data\\symmetry\\tree_0006.pcd"
+# visualize_tree_interactive(tree_006)
+# tree_006.voxelize_tree(voxel_size=0.15)
 
 
-tree_007 = PCD_TREE()
-tree_007.open("D:\\data\\symmetry\\tree_0007.pcd", verbose=True)
-tree_007.set_trunk_center(z_threshold=0.1, min_points=10)
-tree_007.find_tree_top()
-tree_007.file_path = "D:\\data\\symmetry\\tree_0007.pcd"
-# visualize_tree_interactive(tree_007)
+# tree_007 = PCD_TREE()
+# tree_007.open("D:\\data\\symmetry\\tree_0007.pcd", verbose=True)
+# tree_007.set_trunk_center(z_threshold=0.1, min_points=10)
+# tree_007.find_tree_top()
+# tree_007.file_path = "D:\\data\\symmetry\\tree_0007.pcd"
+# # visualize_tree_interactive(tree_007)
+# # tree_007.voxelize_tree(voxel_size=0.15)
+
+# tree_008 = PCD_TREE()
+# tree_008.open("D:\\data\\symmetry\\tree_0008.pcd", verbose=True)
+# tree_008.set_trunk_center(z_threshold=0.1, min_points=10)
+# tree_008.find_tree_top()
+# tree_008.file_path = "D:\\data\\symmetry\\tree_0008.pcd"
+# # visualize_tree_interactive(tree_008)
+# # tree_008.voxelize_tree(voxel_size=0.15)
+# # Объединяем точки
+
+# tree_007.merge_with_other_trees([tree_008])
 # tree_007.voxelize_tree(voxel_size=0.15)
-
-tree_008 = PCD_TREE()
-tree_008.open("D:\\data\\symmetry\\tree_0008.pcd", verbose=True)
-tree_008.set_trunk_center(z_threshold=0.1, min_points=10)
-tree_008.find_tree_top()
-tree_008.file_path = "D:\\data\\symmetry\\tree_0008.pcd"
-# visualize_tree_interactive(tree_008)
-# tree_008.voxelize_tree(voxel_size=0.15)
-# Объединяем точки
-
-tree_007.merge_with_other_trees([tree_008])
-tree_007.voxelize_tree(voxel_size=0.15)
-visualize_tree_interactive(tree_007)
+# visualize_tree_interactive(tree_007)
 
 
-# Измерение симметрии
-tree_006.measure_tree_symmetry(z_step=1)
-tree_007.measure_tree_symmetry(z_step=1)
+# # Измерение симметрии
+# tree_006.measure_tree_symmetry(z_step=1)
+# tree_007.measure_tree_symmetry(z_step=1)
 
 
-print(f"До переноса: {len(tree_006.voxels)}")
-tree_006.restore_symmetry(neighbor_trees=[tree_007], z_step=1.0, voxel_size=0.1, generate_mirrored=True)
-print(f"После переноса: {len(tree_006.voxels)}")
+# print(f"До переноса: {len(tree_006.voxels)}")
+# tree_006.restore_symmetry(neighbor_trees=[tree_007], z_step=1.0, voxel_size=0.1, generate_mirrored=True)
+# print(f"После переноса: {len(tree_006.voxels)}")
 
-# Восстановление симметрии
-print(f"До переноса: {len(tree_007.voxels)}")
-tree_007.restore_symmetry(neighbor_trees=[tree_006], z_step=1.0, voxel_size=0.1, generate_mirrored=True)
-print(f"После переноса: {len(tree_007.voxels)}")
-
-
-if tree_006.recovered_voxels.shape[0] > 0:
-    print(f"🔴 Восстановленные точки для дерева 008 (первые 10):\n", tree_006.recovered_voxels[:10])
-else:
-    print("⚠ Нет восстановленных точек для дерева 008!")
+# # Восстановление симметрии
+# print(f"До переноса: {len(tree_007.voxels)}")
+# tree_007.restore_symmetry(neighbor_trees=[tree_006], z_step=1.0, voxel_size=0.1, generate_mirrored=True)
+# print(f"После переноса: {len(tree_007.voxels)}")
 
 
-if tree_007.recovered_voxels.shape[0] > 0:
-    print(f"🔴 Восстановленные точки для дерева 007 (первые 10):\n", tree_007.recovered_voxels[:10])
-else:
-    print("⚠ Нет восстановленных точек для дерева 007!")
+# if tree_006.recovered_voxels.shape[0] > 0:
+#     print(f"🔴 Восстановленные точки для дерева 008 (первые 10):\n", tree_006.recovered_voxels[:10])
+# else:
+#     print("⚠ Нет восстановленных точек для дерева 008!")
 
 
-tree_006.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
-tree_007.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
+# if tree_007.recovered_voxels.shape[0] > 0:
+#     print(f"🔴 Восстановленные точки для дерева 007 (первые 10):\n", tree_007.recovered_voxels[:10])
+# else:
+#     print("⚠ Нет восстановленных точек для дерева 007!")
 
 
-# Визуализация после восстановления
-visualize_tree_interactive(tree_006)
-visualize_tree_interactive(tree_007)
+# tree_006.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
+# tree_007.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
 
 
-tree_007.measure_tree_symmetry(z_step=1)
-tree_006.measure_tree_symmetry(z_step=1)
+# # Визуализация после восстановления
+# visualize_tree_interactive(tree_006)
+# visualize_tree_interactive(tree_007)
 
 
-# Загрузка и обработка дерева 122
+# tree_007.measure_tree_symmetry(z_step=1)
+# tree_006.measure_tree_symmetry(z_step=1)
+
+
+# # Загрузка и обработка дерева 122
 # tree_122 = PCD_TREE()
 # tree_122.open("D:\\data\\symmetry\\tree_0122.pcd", verbose=True)
 # tree_122.set_trunk_center(z_threshold=0.1, min_points=10)
@@ -835,4 +834,81 @@ tree_006.measure_tree_symmetry(z_step=1)
 # tree_124.measure_tree_symmetry(z_step=1)
 
 
+# # Загрузка и обработка дерева 13
+# tree_13 = PCD_TREE()
+# tree_13.open("D:\\data\\symmetry\\tree_0013.pcd", verbose=True)
+# tree_13.set_trunk_center(z_threshold=0.1, min_points=10)
+# tree_13.find_tree_top()
+# tree_13.file_path = "D:\\data\\symmetry\\tree_0013.pcd"
+# visualize_tree_interactive(tree_13)
+# tree_13.voxelize_tree(voxel_size=0.15)
 
+# # Загрузка и обработка дерева 14
+# tree_14 = PCD_TREE()
+# tree_14.open("D:\\data\\symmetry\\tree_0014.pcd", verbose=True)
+# tree_14.set_trunk_center(z_threshold=0.1, min_points=10)
+# tree_14.find_tree_top()
+# tree_14.file_path = "D:\\data\\symmetry\\tree_0014.pcd"
+# visualize_tree_interactive(tree_14)
+# tree_14.voxelize_tree(voxel_size=0.15)
+
+# # Загрузка и обработка дерева 15
+# tree_15 = PCD_TREE()
+# tree_15.open("D:\\data\\symmetry\\tree_0015.pcd", verbose=True)
+# tree_15.set_trunk_center(z_threshold=0.1, min_points=10)
+# tree_15.find_tree_top()
+# tree_15.file_path = "D:\\data\\symmetry\\tree_0015.pcd"
+# visualize_tree_interactive(tree_15)
+# tree_15.voxelize_tree(voxel_size=0.15)
+
+# # Оценка симметрии
+# tree_13.measure_tree_symmetry(z_step=1)
+# tree_14.measure_tree_symmetry(z_step=1)
+# tree_15.measure_tree_symmetry(z_step=1)
+
+# # Восстановление симметрии
+# print(f"До переноса: {len(tree_13.voxels)}")
+# tree_13.restore_symmetry(neighbor_trees=[tree_14, tree_15], z_step=1.0, voxel_size=0.1, generate_mirrored=False)
+# print(f"После переноса: {len(tree_13.voxels)}")
+
+# print(f"До переноса: {len(tree_14.voxels)}")
+# tree_14.restore_symmetry(neighbor_trees=[tree_13, tree_15], z_step=1.0, voxel_size=0.1, generate_mirrored=False)
+# print(f"После переноса: {len(tree_14.voxels)}")
+
+# print(f"До переноса: {len(tree_15.voxels)}")
+# tree_15.restore_symmetry(neighbor_trees=[tree_13, tree_14], z_step=1.0, voxel_size=0.1, generate_mirrored=False)
+# print(f"После переноса: {len(tree_15.voxels)}")
+
+# # Проверка восстановленных точек
+# for tree_id, tree in zip([13, 14, 15], [tree_13, tree_14, tree_15]):
+#     if tree.recovered_voxels.shape[0] > 0:
+#         print(f"🔴 Восстановленные точки для дерева {tree_id} (первые 10):\n", tree.recovered_voxels[:10])
+#     else:
+#         print(f"⚠ Нет восстановленных точек для дерева {tree_id}!")
+
+# # Генерация многоугольников
+# # tree_13.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
+# # tree_14.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
+# # tree_15.generate_all_layer_polygons(z_step=1.0, voxel_size=0.1)
+
+# # Визуализация
+# visualize_tree_interactive(tree_13)
+# visualize_tree_interactive(tree_14)
+# visualize_tree_interactive(tree_15)
+
+# # Повторная оценка симметрии после восстановления
+# tree_13.measure_tree_symmetry(z_step=1)
+# tree_14.measure_tree_symmetry(z_step=1)
+# tree_15.measure_tree_symmetry(z_step=1)
+
+
+
+
+tree_122 = PCD_TREE()
+tree_122.open("D:\\data\\orion_exp3\\trees\\tree_0091.pcd", verbose=True)
+tree_122.set_trunk_center(z_threshold=0.1, min_points=10)
+tree_122.find_tree_top()
+tree_122.file_path = "D:\\data\\orion_exp3\\trees\\tree_0091.pcd"
+tree_122.voxelize_tree(voxel_size=0.15)
+visualize_tree_interactive(tree_122)
+print(tree_122.measure_tree_symmetry(z_step=1))
